@@ -1,0 +1,106 @@
+:root {
+  color: #2c2a26;
+  background: #f4f2ec;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body { overflow: hidden; }
+
+button, input {
+  font: inherit;
+  color: inherit;
+}
+
+.editor {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  background: #f4f2ec;
+}
+
+.editor svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+.floors, .hud {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: rgba(255, 252, 247, 0.96);
+  border: 1px solid #e0dcd3;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(60, 50, 30, 0.06);
+}
+
+.floors {
+  top: 12px;
+  left: 12px;
+  flex-wrap: wrap;
+  max-width: min(560px, calc(100% - 24px));
+}
+
+.hud { pointer-events: auto; }
+
+.floors button, .hud button, .floors input, .hud input {
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 7px;
+  padding: 4px 8px;
+  line-height: 1.2;
+}
+
+.floors button, .hud button { cursor: pointer; }
+
+.floors button:hover, .hud button:hover { background: rgba(74, 71, 66, 0.06); }
+
+.floors button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.floors input, .hud input {
+  width: 112px;
+  background: #fff;
+  border-color: #e0dcd3;
+  outline: none;
+}
+
+.hud input { width: 140px; }
+
+.floors input:focus, .hud input:focus { border-color: #3d7ea6; }
+
+.hud-value {
+  min-width: 1.5em;
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.swatches { display: flex; gap: 4px; }
+
+.swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid #fff !important;
+  box-shadow: 0 0 0 1px #d9d4ca;
+}
+
+.swatch.active { box-shadow: 0 0 0 2px #3d7ea6; }
+
+.icon-button { width: 28px; padding-inline: 0; }
