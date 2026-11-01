@@ -8,15 +8,11 @@ import {
   createOpening,
   deleteSelection,
   escape,
-  ghostFloor,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onWheel,
   redo,
-  removeFloor,
-  renameFloor,
-  raiseAll,
   setRoomColor,
   setRoomName,
   switchFloor,
@@ -75,7 +71,6 @@ export function Editor({ editing }: { editing: boolean }) {
   }, [])
 
   const floor = activeFloor(state)
-  const ghost = ghostFloor(state)
   return (
     <div className="editor">
       <Canvas
@@ -90,13 +85,8 @@ export function Editor({ editing }: { editing: boolean }) {
         floors={state.document.floors}
         floor={floor}
         editing={editing}
-        canRaise={!!ghost && ghost.walls.length > 0}
         onSwitch={(delta) => setState((current) => switchFloor(current, delta))}
         onAdd={(delta) => setState((current) => addFloor(current, editingRef.current, delta))}
-        onDelete={() => setState((current) => removeFloor(current, editingRef.current))}
-        onRaise={() => setState((current) => raiseAll(current, editingRef.current))}
-        onRename={(name) => setState((current) => renameFloor(current, editingRef.current, name))}
-        onTextFocus={(focused) => setState((current) => ({ ...current, textFocused: focused }))}
       />
       {state.selection && (
         <SelectionHud

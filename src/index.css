@@ -34,7 +34,7 @@ button, input {
   user-select: none;
 }
 
-.floors, .hud {
+.hud {
   position: absolute;
   z-index: 2;
   display: flex;
@@ -45,18 +45,72 @@ button, input {
   border: 1px solid #e0dcd3;
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(60, 50, 30, 0.06);
+  pointer-events: auto;
 }
 
-.floors {
-  top: 12px;
-  left: 12px;
-  flex-wrap: wrap;
-  max-width: min(560px, calc(100% - 24px));
+.floor-number {
+  position: absolute;
+  z-index: 2;
+  top: 18px;
+  right: 26px;
+  font-size: 64px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: #2c2a26;
+  pointer-events: none;
+  user-select: none;
 }
 
-.hud { pointer-events: auto; }
+.floor-nav {
+  position: absolute;
+  z-index: 2;
+  left: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
 
-.floors button, .hud button, .floors input, .hud input {
+.floor-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.floor-nav button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #e0dcd3;
+  background: rgba(255, 252, 247, 0.96);
+  box-shadow: 0 8px 24px rgba(60, 50, 30, 0.08);
+  cursor: pointer;
+  color: #2c2a26;
+}
+
+.floor-step { width: 56px; height: 56px; }
+
+.floor-add {
+  width: 36px;
+  height: 36px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.floor-nav button:hover:not(:disabled) { background: #fff; }
+
+.floor-nav button:disabled {
+  opacity: 0.35;
+  cursor: default;
+  box-shadow: none;
+}
+
+.hud button, .hud input {
   border: 1px solid transparent;
   background: transparent;
   border-radius: 7px;
@@ -64,25 +118,18 @@ button, input {
   line-height: 1.2;
 }
 
-.floors button, .hud button { cursor: pointer; }
+.hud button { cursor: pointer; }
 
-.floors button:hover, .hud button:hover { background: rgba(74, 71, 66, 0.06); }
+.hud button:hover { background: rgba(74, 71, 66, 0.06); }
 
-.floors button:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.floors input, .hud input {
-  width: 112px;
+.hud input {
+  width: 140px;
   background: #fff;
   border-color: #e0dcd3;
   outline: none;
 }
 
-.hud input { width: 140px; }
-
-.floors input:focus, .hud input:focus { border-color: #3d7ea6; }
+.hud input:focus { border-color: #3d7ea6; }
 
 .hud-value {
   min-width: 1.5em;
