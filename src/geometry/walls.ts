@@ -9,6 +9,8 @@ export type WallGraphics = {
   solids: WallSolid[]
   windows: WallWindow[]
   dashes: WallDash[]
+  /** Заливка дыры в вершине, куда сходятся три стены и больше. */
+  joins: Point[][]
 }
 
 type EndCap = { right: Point; left: Point }
@@ -174,7 +176,54 @@ export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics
       } else solids.push({ wallId: wall.id, points })
     }
   }
-  return { solids, windows, dashes }
+  return { solids, windows, dashes, joins: joinPolygons(floor) }
+}
+
+/** Многоугольник вокруг вершины, который не покрывает ни одна стена. */
+function joinPolygons(floor: Floor): Point[][] {
+  const seen = new Set<string>()
+  const polygons: Point[][] = []
+  for (const wall of floor.walls) {
+    for (const vertexId of [wall.a, wall.b]) {
+      if (seen.has(vertexId)) continue
+      seen.add(vertexId)
+      const arms = incident(floor, vertexId).filter((item) => item.wall.thickness > 0)
+      if (arms.length < 3) continue
+      const points: Point[] = []
+      for (const arm of arms) {
+        const cap = capAt(floor, arm.wall, vertexId, arm.other)
+        points.push(cap.left, cap.right)
+      }
+      const hull = convexHull(points)
+      if (hull.length >= 3) polygons.push(hull)
+    }
+  }
+  return polygons
+}
+
+function convexHull(points: Point[]): Point[] {
+  const unique: Point[] = []
+  for (const point of points) {
+    if (unique.some((item) => Math.abs(item.x - point.x) < 1e-6 && Math.abs(item.y - point.y) < 1e-6)) continue
+    unique.push(point)
+  }
+  if (unique.length < 3) return []
+  const sorted = unique.slice().sort((a, b) => a.x - b.x || a.y - b.y)
+  const turn = (o: Point, a: Point, b: Point) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+  const lower: Point[] = []
+  for (const point of sorted) {
+    while (lower.length >= 2 && turn(lower[lower.length - 2]!, lower[lower.length - 1]!, point) <= 0) lower.pop()
+    lower.push(point)
+  }
+  const upper: Point[] = []
+  for (let index = sorted.length - 1; index >= 0; index--) {
+    const point = sorted[index]!
+    while (upper.length >= 2 && turn(upper[upper.length - 2]!, upper[upper.length - 1]!, point) <= 0) upper.pop()
+    upper.push(point)
+  }
+  lower.pop()
+  upper.pop()
+  return lower.concat(upper)
 }
 
 export function alongWall(a: Point, b: Point, distance: number): Point {

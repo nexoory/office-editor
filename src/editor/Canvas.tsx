@@ -130,6 +130,16 @@ export function Canvas(props: {
         })}
         {ghostGraphics && (
           <g opacity={0.33} pointerEvents="none">
+            {ghostGraphics.joins.map((points, index) => (
+              <polygon
+                key={`gj${index}`}
+                points={poly(points)}
+                fill={theme.wall}
+                stroke={theme.wall}
+                strokeWidth={1 / zoom}
+                strokeLinejoin="round"
+              />
+            ))}
             {ghostGraphics.solids.map((solid, index) => (
               <polygon key={`g${index}`} points={poly(solid.points)} fill={theme.wall} />
             ))}
@@ -163,6 +173,16 @@ export function Canvas(props: {
             />
           ))}
         <g pointerEvents="none">
+          {graphics.joins.map((points, index) => (
+            <polygon
+              key={`join${index}`}
+              points={poly(points)}
+              fill={theme.wall}
+              stroke={theme.wall}
+              strokeWidth={1 / zoom}
+              strokeLinejoin="round"
+            />
+          ))}
           {graphics.solids.map((solid, index) => (
             <polygon
               key={`${solid.wallId}-${index}`}

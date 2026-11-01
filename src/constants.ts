@@ -1,3 +1,5 @@
+/** Единиц холста в одном метре подписи. Толщина и проёмы остаются в единицах холста. */
+export const UNITS_PER_METER = 100
 export const DEFAULT_THICKNESS = 12
 export const MIN_THICKNESS = 0
 export const MAX_THICKNESS = 48
