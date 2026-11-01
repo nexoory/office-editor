@@ -15,3 +15,9 @@ export const MIN_ZOOM = 0.05
 export const MAX_ZOOM = 12
 export const ZOOM_FACTOR = 1.08
 export const ALIGN_DEG = 2
+/** Нижняя граница длины, ширины и шага: один сантиметр, одна единица холста. */
+export const MIN_OBJECT_SPAN = 1
+/** Зазор между кромкой стола и креслом, в единицах холста. Не доля размера кресла. */
+export const CHAIR_GAP = 8
+export const CHAIR_LENGTH = 45
+export const CHAIR_WIDTH = 40

@@ -14,9 +14,13 @@ import {
   lengthLabel,
   type Preview,
 } from '../geometry/preview'
-import { theme } from '../theme'
+import { roomInk, theme } from '../theme'
 import type { Floor, Point } from '../types'
 import { wallEnds, wallGraphics } from '../geometry/walls'
+import { DoorLeaves, FloorObjects, RotateHandle } from './figures'
+import { chairsOf } from '../objects/catalog'
+import { ROOM_ICON_SIZE, RoomGlyph } from '../objects/icons'
+import { chairPose } from '../objects/placement'
 
 export function Canvas(props: {
   state: EditorState
@@ -65,6 +69,8 @@ export function Canvas(props: {
   const analysis = analyze(floor)
   const graphics = wallGraphics(floor, props.editing)
   const ghostGraphics = ghost ? wallGraphics(ghost, props.editing) : null
+  const selectedObjectId = state.selection?.kind === 'object' ? state.selection.id : null
+  const selectedObject = selectedObjectId ? floor.objects.find((item) => item.id === selectedObjectId) : undefined
   const preview = livePreview(state)
   const labels = moveLabels(state, floor)
   const guides =
@@ -87,6 +93,7 @@ export function Canvas(props: {
   return (
     <svg
       ref={ref}
+      className="plan-canvas"
       style={{ cursor: cursorFor(state) }}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => {
@@ -128,7 +135,7 @@ export function Canvas(props: {
             />
           )
         })}
-        {ghostGraphics && (
+        {ghost && ghostGraphics && (
           <g opacity={0.33} pointerEvents="none">
             {ghostGraphics.joins.map((points, index) => (
               <polygon
@@ -146,6 +153,7 @@ export function Canvas(props: {
             {ghostGraphics.windows.map((item) => (
               <polygon key={item.openingId} points={poly(item.points)} fill={theme.window} />
             ))}
+            <DoorLeaves floor={ghost} zoom={zoom} icons={false} selectedId={null} />
           </g>
         )}
         {ghostGraphics?.dashes.map((dash) => (
@@ -172,6 +180,53 @@ export function Canvas(props: {
               pointerEvents="none"
             />
           ))}
+        {analysis.faces.map((face) => {
+          const room = floor.rooms.find((item) => sameIds(item.vertexIds, face.vertexIds))
+          if (!room || (!room.name && !room.icon)) return null
+          const shape = floorShape(floor, face)
+          const center = labelPoint(shape.outer, shape.holes)
+          const width = span(shape.outer) * zoom - 8
+          const both = !!room.name && !!room.icon
+          const ink = roomInk(room.color)
+          const cover = 2 / zoom
+          return (
+            <g key={`${room.id}-name`} pointerEvents="none">
+              <mask id={`${room.id}-mark`} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
+                <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} fill="#fff" />
+                {floor.objects.map((object) => (
+                  <polygon key={object.id} points={footprintPoints(object, cover)} fill="#000" />
+                ))}
+                {floor.objects.flatMap((object) =>
+                  chairsOf(object).map((chair) => (
+                    <polygon key={chair.id} points={footprintPoints(chairPose(object, chair), cover)} fill="#000" />
+                  )),
+                )}
+              </mask>
+              <g mask={`url(#${room.id}-mark)`}>
+                <g transform={`translate(${center.x} ${center.y}) scale(${1 / zoom})`}>
+                  {room.icon && (
+                    <g transform={`translate(${-ROOM_ICON_SIZE / 2} ${both ? -ROOM_ICON_SIZE - 4 : -ROOM_ICON_SIZE / 2})`}>
+                      <RoomGlyph icon={room.icon} symbol={room.symbol} color={ink} />
+                    </g>
+                  )}
+                  {room.name && (
+                    <text
+                      y={both ? 14 : 0}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={20}
+                      fontWeight={600}
+                      fill={ink}
+                    >
+                      {ellipsize(room.name, width)}
+                    </text>
+                  )}
+                </g>
+              </g>
+            </g>
+          )
+        })}
+        <FloorObjects floor={floor} selection={state.selection} />
         <g pointerEvents="none">
           {graphics.joins.map((points, index) => (
             <polygon
@@ -221,7 +276,12 @@ export function Canvas(props: {
             />
           ))}
           {floor.openings
-            .filter((opening) => opening.kind === 'passage' && state.selection?.kind === 'opening' && state.selection.id === opening.id)
+            .filter(
+              (opening) =>
+                (opening.kind === 'passage' || opening.kind === 'door') &&
+                state.selection?.kind === 'opening' &&
+                state.selection.id === opening.id,
+            )
             .map((opening) => {
               const wall = floor.walls.find((item) => item.id === opening.wallId)
               const ends = wall && wallEnds(floor, wall)
@@ -238,6 +298,13 @@ export function Canvas(props: {
               )
             })}
         </g>
+        <DoorLeaves
+          floor={floor}
+          zoom={zoom}
+          icons
+          selectedId={state.selection?.kind === 'opening' ? state.selection.id : null}
+        />
+        {props.editing && selectedObject && <RotateHandle object={selectedObject} zoom={zoom} />}
         {props.editing &&
           floor.vertices.map((vertex) => {
             const selected = state.selection?.kind === 'vertex' && state.selection.id === vertex.id
@@ -252,27 +319,6 @@ export function Canvas(props: {
               />
             )
           })}
-        {analysis.faces.map((face) => {
-          const room = floor.rooms.find((item) => sameIds(item.vertexIds, face.vertexIds))
-          if (!room?.name) return null
-          const shape = floorShape(floor, face)
-          const center = labelPoint(shape.outer, shape.holes)
-          const width = span(shape.outer) * zoom - 8
-          return (
-            <text
-              key={`${room.id}-name`}
-              x={center.x}
-              y={center.y}
-              textAnchor="middle"
-              dominantBaseline="middle"
-              fontSize={14 / zoom}
-              fill={theme.label}
-              pointerEvents="none"
-            >
-              {ellipsize(room.name, width)}
-            </text>
-          )
-        })}
         {guides.map((guide, index) => (
           <line
             key={`guide${index}`}
@@ -319,6 +365,21 @@ export function Canvas(props: {
       </g>
     </svg>
   )
+}
+
+function footprintPoints(pose: { x: number; y: number; rotation: number; length: number; width: number }, pad: number): string {
+  const hx = pose.length / 2 + pad
+  const hy = pose.width / 2 + pad
+  const c = Math.cos(pose.rotation)
+  const s = Math.sin(pose.rotation)
+  return [
+    [-hx, -hy],
+    [hx, -hy],
+    [hx, hy],
+    [-hx, hy],
+  ]
+    .map(([x, y]) => `${pose.x + x * c - y * s},${pose.y + x * s + y * c}`)
+    .join(' ')
 }
 
 function Grid(props: { bounds: { x: number; y: number; w: number; h: number }; zoom: number }) {
@@ -525,7 +586,7 @@ function ellipsize(text: string, maxPx: number): string {
   if (maxPx <= 8) return ''
   const context = measure()
   if (!context) return text
-  context.font = '14px Segoe UI, system-ui, sans-serif'
+  context.font = '600 20px Segoe UI, system-ui, sans-serif'
   if (context.measureText(text).width <= maxPx) return text
   let value = text
   while (value.length > 1 && context.measureText(`${value}…`).width > maxPx) value = value.slice(0, -1)

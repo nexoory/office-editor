@@ -26,7 +26,7 @@ export function newId(): string {
 }
 
 export function createFloor(name: string): Floor {
-  return { id: newId(), name, vertices: [], walls: [], openings: [], rooms: [] }
+  return { id: newId(), name, vertices: [], walls: [], openings: [], rooms: [], objects: [] }
 }
 
 export function createDocument(): Document {
@@ -171,7 +171,7 @@ export function syncRooms(
   }
   for (const face of analysis.faces) {
     if (used.has(face.index)) continue
-    rooms.push({ id: newId(), vertexIds: face.vertexIds, name: '', color: null })
+    rooms.push({ id: newId(), vertexIds: face.vertexIds, name: '', color: null, icon: null })
   }
   return { ...after, rooms }
 }

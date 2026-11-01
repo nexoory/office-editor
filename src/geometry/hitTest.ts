@@ -1,4 +1,7 @@
+import { chairsOf } from '../objects/catalog'
+import { chairPose, pointInFrame, rotateHandlePoint } from '../objects/placement'
 import type { Floor, Point, Selection } from '../types'
+import { doorSwing } from './doors'
 import { analyze, ringPoints } from './faces'
 import { dist, pointInPolygon, pointInRegion, projectSegment } from './math'
 import { wallEnds, wallLengthOf } from './walls'
@@ -7,6 +10,9 @@ export type Hit =
   | { kind: 'opening'; id: string }
   | { kind: 'vertex'; id: string }
   | { kind: 'wall'; id: string }
+  | { kind: 'rotate'; id: string }
+  | { kind: 'chair'; objectId: string; chairId: string }
+  | { kind: 'object'; id: string }
   | { kind: 'room'; id: string }
   | { kind: 'ghost-wall'; id: string }
   | { kind: 'empty' }
@@ -30,6 +36,7 @@ export function hitTest(
   zoom: number,
   editing: boolean,
   button: 'left' | 'right',
+  selection: Selection | null = null,
 ): Hit {
   const vertexR = VERTEX_PX / zoom
   const slop = WALL_PX / zoom
@@ -46,9 +53,20 @@ export function hitTest(
         if (opening.wallId !== wall.id) continue
         const proj = projectSegment(point, ends.a, ends.b)
         const offset = proj.t * length
-        if (offset < opening.offset - 0.5 || offset > opening.offset + opening.width + 0.5) continue
-        if (proj.distance > half + slop) continue
-        const score = proj.distance
+        let score: number | null = null
+        if (
+          offset >= opening.offset - 0.5 &&
+          offset <= opening.offset + opening.width + 0.5 &&
+          proj.distance <= half + slop
+        ) {
+          score = proj.distance
+        }
+        const swing = doorSwing(ends.a, ends.b, opening)
+        if (swing) {
+          const leaf = projectSegment(point, swing.hinge, swing.tip)
+          if (leaf.distance <= 2.25 + slop) score = score === null ? leaf.distance : Math.min(score, leaf.distance)
+        }
+        if (score === null) continue
         if (!bestOpening || score < bestOpening.score) bestOpening = { id: opening.id, score }
       }
     }
@@ -62,6 +80,13 @@ export function hitTest(
       }
     }
     if (bestVertex) return { kind: 'vertex', id: bestVertex.id }
+
+    if (selection?.kind === 'object') {
+      const selected = floor.objects.find((object) => object.id === selection.id)
+      if (selected && dist(point, rotateHandlePoint(selected, zoom)) <= 10 / zoom) {
+        return { kind: 'rotate', id: selected.id }
+      }
+    }
 
     let bestWall: { id: string; score: number } | null = null
     for (const wall of floor.walls) {
@@ -77,6 +102,9 @@ export function hitTest(
     }
     if (bestWall) return { kind: 'wall', id: bestWall.id }
   }
+
+  const furniture = hitFurniture(floor, point, editing)
+  if (furniture) return furniture
 
   const analysis = analyze(floor)
   let bestRoom: { id: string; area: number } | null = null
@@ -111,6 +139,25 @@ export function hitTest(
   }
 
   return { kind: 'empty' }
+}
+
+function hitFurniture(floor: Floor, point: Point, editing: boolean): Hit | null {
+  for (let index = floor.objects.length - 1; index >= 0; index--) {
+    const object = floor.objects[index]
+    if (!object) continue
+    const chairs = chairsOf(object)
+    for (let chairIndex = chairs.length - 1; chairIndex >= 0; chairIndex--) {
+      const chair = chairs[chairIndex]
+      if (!chair || !pointInFrame(chairPose(object, chair), point)) continue
+      if (!editing) return { kind: 'object', id: object.id }
+      return { kind: 'chair', objectId: object.id, chairId: chair.id }
+    }
+  }
+  for (let index = floor.objects.length - 1; index >= 0; index--) {
+    const object = floor.objects[index]
+    if (object && pointInFrame(object, point)) return { kind: 'object', id: object.id }
+  }
+  return null
 }
 
 function sameLoop(a: string[], b: string[]): boolean {
@@ -148,6 +195,17 @@ export function selectionAnchor(floor: Floor, selection: Selection): Point | nul
       y: ends.a.y + (ends.b.y - ends.a.y) * t,
     }
   }
+  if (selection.kind === 'object') {
+    const object = floor.objects.find((item) => item.id === selection.id)
+    return object ? { x: object.x, y: object.y } : null
+  }
+  if (selection.kind === 'chair') {
+    const table = floor.objects.find((item) => item.id === selection.objectId)
+    const chair = table && chairsOf(table).find((item) => item.id === selection.chairId)
+    if (!table || !chair) return null
+    const pose = chairPose(table, chair)
+    return { x: pose.x, y: pose.y }
+  }
   const room = floor.rooms.find((item) => item.id === selection.id)
   if (!room) return null
   const points = ringPoints(floor, room.vertexIds)
@@ -171,5 +229,10 @@ function interiorPointSafe(points: Point[]): Point {
 export function hitMatchesSelection(hit: Hit, selection: Selection | null): boolean {
   if (!selection) return false
   if (hit.kind === 'empty' || hit.kind === 'ghost-wall') return false
+  if (hit.kind === 'chair' && selection.kind === 'chair') {
+    return hit.objectId === selection.objectId && hit.chairId === selection.chairId
+  }
+  if (hit.kind === 'rotate' && selection.kind === 'object') return hit.id === selection.id
+  if (hit.kind === 'chair' || hit.kind === 'rotate') return false
   return hit.kind === selection.kind && hit.id === selection.id
 }

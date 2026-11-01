@@ -24,11 +24,38 @@ import {
 import { layoutOk, movedWallIds } from '../geometry/collide'
 import { hitMatchesSelection, hitTest, type Hit } from '../geometry/hitTest'
 import { constrainAngle, left, lerp, mul, norm, sub } from '../geometry/math'
+import {
+  addChair,
+  addObjectTag,
+  deleteChair,
+  deleteObject,
+  moveObjectTo,
+  placeObject,
+  removeObjectTag,
+  rotateObject,
+  setChairLength,
+  setChairPlace,
+  setChairWidth,
+  setDoorAccess,
+  setDoorHinge,
+  setDoorSide,
+  setObjectColor,
+  setObjectSymbol,
+  setObjectDirection,
+  setObjectLength,
+  setObjectNote,
+  setObjectStep,
+  setObjectWidth,
+  setOpeningKind,
+  setRoomIcon,
+  setRoomSymbol,
+} from '../objects/edit'
+import { nearestOnContour, worldToLocal } from '../objects/placement'
 import { anchorAt, computePreview, incidentWallIds } from '../geometry/preview'
 import { snapPoint } from '../geometry/snap'
 import { wallEnds } from '../geometry/walls'
 import { pushSnap, takeSnap, type HistorySnap } from '../history'
-import type { Document, Floor, OpeningKind, Point, Selection, View } from '../types'
+import type { Access, Document, DoorSide, Floor, Hinge, ObjectKind, OpeningKind, Point, RoomIcon, Selection, StairDirection, View } from '../types'
 
 export type Gesture =
   | { type: 'pending'; button: 0 | 2; sx: number; sy: number; hit: Hit }
@@ -60,6 +87,9 @@ export type Gesture =
       history: HistorySnap
     }
   | { type: 'move-opening'; id: string; floor: Floor; history: HistorySnap }
+  | { type: 'move-object'; id: string; origin: Point; start: Point; floor: Floor; history: HistorySnap }
+  | { type: 'rotate-object'; id: string; offset: number; floor: Floor; history: HistorySnap }
+  | { type: 'move-chair'; objectId: string; chairId: string; floor: Floor; history: HistorySnap }
 
 export type EditorState = {
   document: Document
@@ -74,6 +104,7 @@ export type EditorState = {
   gesture: Gesture | null
   textFocused: boolean
   wheel: { at: number; key: string } | null
+  armed: ObjectKind | null
 }
 
 export type PointerInfo = { button: number; sx: number; sy: number; shift: boolean }
@@ -93,6 +124,7 @@ export function createEditorState(): EditorState {
     gesture: null,
     textFocused: false,
     wheel: null,
+    armed: null,
   }
 }
 
@@ -133,6 +165,11 @@ function selectionAlive(floor: Floor, selection: Selection | null): Selection | 
   if (selection.kind === 'opening') {
     return floor.openings.some((item) => item.id === selection.id) ? selection : null
   }
+  if (selection.kind === 'object') return floor.objects.some((item) => item.id === selection.id) ? selection : null
+  if (selection.kind === 'chair') {
+    const table = floor.objects.find((item) => item.id === selection.objectId)
+    return table?.chairs?.some((item) => item.id === selection.chairId) ? selection : null
+  }
   return floor.rooms.some((item) => item.id === selection.id) ? selection : null
 }
 
@@ -172,7 +209,10 @@ function abortGesture(state: EditorState): EditorState {
     (gesture.type === 'move-vertex' ||
       gesture.type === 'move-wall' ||
       gesture.type === 'move-room' ||
-      gesture.type === 'move-opening')
+      gesture.type === 'move-opening' ||
+      gesture.type === 'move-object' ||
+      gesture.type === 'rotate-object' ||
+      gesture.type === 'move-chair')
   ) {
     next = paint(state, gesture.floor)
   }
@@ -235,6 +275,8 @@ export function deleteSelection(state: EditorState, editing: boolean): EditorSta
   if (selection.kind === 'opening') next = deleteOpening(floor, selection.id)
   else if (selection.kind === 'wall') next = deleteWall(floor, selection.id, selection)
   else if (selection.kind === 'room') next = deleteRoom(floor, selection.id, selection)
+  else if (selection.kind === 'object') next = deleteObject(floor, selection.id)
+  else if (selection.kind === 'chair') next = deleteChair(floor, selection.objectId, selection.chairId)
   else next = deleteVertex(floor, selection.id, selection)
   if (!next) return state
   return remember(state, { ...paint(state, next), selection: null, chain: null, axisLock: null, gesture: null })
@@ -327,12 +369,16 @@ export function createOpening(state: EditorState, editing: boolean, kind: Openin
 
 export function escape(state: EditorState): EditorState {
   if (state.textFocused) return state
+  if (state.armed) return { ...state, armed: null }
   if (state.gesture?.type === 'draw') return { ...state, gesture: null, axisLock: null }
   if (
     state.gesture?.type === 'move-vertex' ||
     state.gesture?.type === 'move-wall' ||
     state.gesture?.type === 'move-room' ||
-    state.gesture?.type === 'move-opening'
+    state.gesture?.type === 'move-opening' ||
+    state.gesture?.type === 'move-object' ||
+    state.gesture?.type === 'rotate-object' ||
+    state.gesture?.type === 'move-chair'
   ) {
     return { ...paint(state, state.gesture.floor), gesture: null, axisLock: null }
   }
@@ -393,7 +439,18 @@ export function onPointerDown(state: EditorState, info: PointerInfo, editing: bo
   if (info.button !== 0 && info.button !== 2) return state
   if (info.button === 2 && !editing) return state
   const world = screenToWorld(state.view, info.sx, info.sy)
-  const hit = hitTest(activeFloor(state), ghostFloor(state), world, state.view.zoom, editing, info.button === 2 ? 'right' : 'left')
+  if (info.button === 2 && editing && state.armed) {
+    return { ...state, cursor: { x: world.x, y: world.y, shift: info.shift } }
+  }
+  const hit = hitTest(
+    activeFloor(state),
+    ghostFloor(state),
+    world,
+    state.view.zoom,
+    editing,
+    info.button === 2 ? 'right' : 'left',
+    state.selection,
+  )
   return {
     ...state,
     cursor: { x: world.x, y: world.y, shift: info.shift },
@@ -420,11 +477,11 @@ export function onPointerMove(state: EditorState, info: PointerInfo, editing: bo
   if (gesture?.type === 'pending' && passedThreshold(gesture, info.sx, info.sy)) {
     if (gesture.button === 0) {
       next = { ...next, gesture: { type: 'pan', sx: info.sx, sy: info.sy } }
-    } else if (!next.chain && editing) {
+    } else if (!next.chain && editing && !next.armed) {
       const down = screenToWorld(state.view, gesture.sx, gesture.sy)
-      if (hitMatchesSelection(gesture.hit, next.selection)) {
-        next = beginMove(next, down)
-      } else {
+      if (gesture.hit.kind === 'rotate') next = beginRotate(next, down)
+      else if (hitMatchesSelection(gesture.hit, next.selection)) next = beginMove(next, down)
+      else {
         const anchor = anchorAt(activeFloor(next), ghostFloor(next), down, next.view.zoom, null)
         next = { ...next, selection: null, axisLock: anchor.lockWallId, gesture: { type: 'draw', anchor: anchor.point } }
       }
@@ -434,6 +491,9 @@ export function onPointerMove(state: EditorState, info: PointerInfo, editing: bo
   else if (next.gesture?.type === 'move-wall') next = dragWall(next, world, info.shift)
   else if (next.gesture?.type === 'move-room') next = dragRoom(next, world, info.shift)
   else if (next.gesture?.type === 'move-opening') next = dragOpening(next, world)
+  else if (next.gesture?.type === 'move-object') next = dragObject(next, world, info.shift)
+  else if (next.gesture?.type === 'rotate-object') next = dragRotate(next, world, info.shift)
+  else if (next.gesture?.type === 'move-chair') next = dragChair(next, world)
   if (next.chain || next.gesture?.type === 'draw') {
     const anchor = next.gesture?.type === 'draw' ? next.gesture.anchor : next.chain?.[next.chain.length - 1]
     if (anchor) {
@@ -506,9 +566,49 @@ function beginMove(state: EditorState, origin: Point): EditorState {
       },
     }
   }
+  if (selection.kind === 'object') {
+    const object = floor.objects.find((item) => item.id === selection.id)
+    if (!object) return state
+    return {
+      ...state,
+      gesture: {
+        type: 'move-object',
+        id: object.id,
+        origin,
+        start: { x: object.x, y: object.y },
+        floor,
+        history,
+      },
+    }
+  }
+  if (selection.kind === 'chair') {
+    return {
+      ...state,
+      gesture: { type: 'move-chair', objectId: selection.objectId, chairId: selection.chairId, floor, history },
+    }
+  }
+  if (selection.kind !== 'opening') return state
   return {
     ...state,
     gesture: { type: 'move-opening', id: selection.id, floor, history },
+  }
+}
+
+function beginRotate(state: EditorState, origin: Point): EditorState {
+  const selection = state.selection
+  if (selection?.kind !== 'object') return state
+  const object = activeFloor(state).objects.find((item) => item.id === selection.id)
+  if (!object) return state
+  const pointer = Math.atan2(origin.y - object.y, origin.x - object.x)
+  return {
+    ...state,
+    gesture: {
+      type: 'rotate-object',
+      id: object.id,
+      offset: object.rotation - pointer,
+      floor: activeFloor(state),
+      history: takeSnap(state.document, state.activeFloorId),
+    },
   }
 }
 
@@ -566,6 +666,37 @@ function dragRoom(state: EditorState, cursor: Point, shift: boolean): EditorStat
   return paint(state, floor)
 }
 
+function axisDelta(raw: Point, shift: boolean): Point {
+  if (!shift) return raw
+  return Math.abs(raw.x) >= Math.abs(raw.y) ? { x: raw.x, y: 0 } : { x: 0, y: raw.y }
+}
+
+function dragObject(state: EditorState, cursor: Point, shift: boolean): EditorState {
+  const gesture = state.gesture
+  if (gesture?.type !== 'move-object') return state
+  const delta = axisDelta(sub(cursor, gesture.origin), shift)
+  return paint(state, moveObjectTo(gesture.floor, gesture.id, gesture.start.x + delta.x, gesture.start.y + delta.y))
+}
+
+function dragRotate(state: EditorState, cursor: Point, shift: boolean): EditorState {
+  const gesture = state.gesture
+  if (gesture?.type !== 'rotate-object') return state
+  const object = gesture.floor.objects.find((item) => item.id === gesture.id)
+  if (!object) return state
+  let angle = Math.atan2(cursor.y - object.y, cursor.x - object.x) + gesture.offset
+  if (shift) angle = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4)
+  return paint(state, rotateObject(gesture.floor, gesture.id, angle))
+}
+
+function dragChair(state: EditorState, cursor: Point): EditorState {
+  const gesture = state.gesture
+  if (gesture?.type !== 'move-chair') return state
+  const table = gesture.floor.objects.find((item) => item.id === gesture.objectId)
+  if (!table) return state
+  const place = nearestOnContour(table.length, table.width, worldToLocal(table, cursor))
+  return paint(state, setChairPlace(gesture.floor, gesture.objectId, gesture.chairId, place.edge, place.u))
+}
+
 function dragOpening(state: EditorState, cursor: Point): EditorState {
   const gesture = state.gesture
   if (gesture?.type !== 'move-opening') return state
@@ -610,19 +741,32 @@ export function onPointerUp(state: EditorState, info: PointerInfo, editing: bool
     }
     return next
   }
-  if (gesture.type === 'move-vertex' || gesture.type === 'move-wall' || gesture.type === 'move-room' || gesture.type === 'move-opening') {
+  if (
+    gesture.type === 'move-vertex' ||
+    gesture.type === 'move-wall' ||
+    gesture.type === 'move-room' ||
+    gesture.type === 'move-opening' ||
+    gesture.type === 'move-object' ||
+    gesture.type === 'rotate-object' ||
+    gesture.type === 'move-chair'
+  ) {
     return finishMove({ ...state, cursor: { x: world.x, y: world.y, shift: info.shift } }, gesture.history, gesture.floor)
   }
   if (gesture.type !== 'pending') return state
   if (gesture.button === 0) {
     const hit = gesture.hit
-    const selection =
-      hit.kind === 'room'
-        ? ({ kind: 'room', id: hit.id } as Selection)
-        : editing && (hit.kind === 'vertex' || hit.kind === 'wall' || hit.kind === 'opening')
-          ? ({ kind: hit.kind, id: hit.id } as Selection)
-          : null
-    return { ...state, gesture: null, selection }
+    if (editing && state.armed && (hit.kind === 'room' || hit.kind === 'empty')) {
+      const at = screenToWorld(state.view, gesture.sx, gesture.sy)
+      const placed = placeObject(activeFloor(state), state.armed, at.x, at.y)
+      return remember(state, {
+        ...paint(state, placed.floor),
+        gesture: null,
+        selection: { kind: 'object', id: placed.id },
+        armed: null,
+      })
+    }
+    const selection = selectionFromHit(hit, editing)
+    return { ...state, gesture: null, selection, armed: state.armed && selection ? null : state.armed }
   }
   if (!editing) return { ...state, gesture: null }
   if (state.chain) return commitChain({ ...state, gesture: null, cursor: { x: world.x, y: world.y, shift: info.shift } }, world, info.shift)
@@ -702,9 +846,157 @@ export function cursorFor(state: EditorState): string {
     state.gesture?.type === 'move-vertex' ||
     state.gesture?.type === 'move-wall' ||
     state.gesture?.type === 'move-room' ||
-    state.gesture?.type === 'move-opening'
+    state.gesture?.type === 'move-opening' ||
+    state.gesture?.type === 'move-object' ||
+    state.gesture?.type === 'rotate-object' ||
+    state.gesture?.type === 'move-chair'
   ) {
     return 'move'
   }
   return 'default'
+}
+
+function selectionFromHit(hit: Hit, editing: boolean): Selection | null {
+  if (hit.kind === 'room') return { kind: 'room', id: hit.id }
+  if (hit.kind === 'object') return { kind: 'object', id: hit.id }
+  if (!editing) return null
+  if (hit.kind === 'vertex' || hit.kind === 'wall' || hit.kind === 'opening') return { kind: hit.kind, id: hit.id }
+  if (hit.kind === 'chair') return { kind: 'chair', objectId: hit.objectId, chairId: hit.chairId }
+  if (hit.kind === 'rotate') return { kind: 'object', id: hit.id }
+  return null
+}
+
+function editFloor(state: EditorState, editing: boolean, produce: (floor: Floor) => Floor | null): EditorState {
+  if (!editing) return state
+  const floor = activeFloor(state)
+  const next = produce(floor)
+  if (!next || JSON.stringify(next) === JSON.stringify(floor)) return state
+  return remember(state, paint(state, next))
+}
+
+export function armObject(state: EditorState, kind: ObjectKind): EditorState {
+  return { ...state, armed: state.armed === kind ? null : kind }
+}
+
+export function selectChair(state: EditorState, objectId: string, chairId: string): EditorState {
+  return { ...state, selection: { kind: 'chair', objectId, chairId }, armed: null }
+}
+
+export function changeRoomIcon(state: EditorState, editing: boolean, roomId: string, icon: RoomIcon | null): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const room = floor.rooms.find((item) => item.id === roomId)
+    if (!room || room.icon === icon) return null
+    return setRoomIcon(floor, roomId, icon)
+  })
+}
+
+export function changeRoomSymbol(state: EditorState, editing: boolean, roomId: string, symbol: string): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const room = floor.rooms.find((item) => item.id === roomId)
+    if (!room || room.symbol === symbol) return null
+    return setRoomSymbol(floor, roomId, symbol)
+  })
+}
+
+export function changeOpeningKind(state: EditorState, editing: boolean, openingId: string, kind: 'passage' | 'door'): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const opening = floor.openings.find((item) => item.id === openingId)
+    if (!opening || opening.kind === kind || opening.kind === 'window') return null
+    return setOpeningKind(floor, openingId, kind)
+  })
+}
+
+export function changeDoorHinge(state: EditorState, editing: boolean, openingId: string, hinge: Hinge): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const opening = floor.openings.find((item) => item.id === openingId)
+    if (!opening || opening.kind !== 'door' || opening.hinge === hinge) return null
+    return setDoorHinge(floor, openingId, hinge)
+  })
+}
+
+export function changeDoorSide(state: EditorState, editing: boolean, openingId: string, side: DoorSide): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const opening = floor.openings.find((item) => item.id === openingId)
+    if (!opening || opening.kind !== 'door' || opening.side === side) return null
+    return setDoorSide(floor, openingId, side)
+  })
+}
+
+export function changeDoorAccess(state: EditorState, editing: boolean, openingId: string, access: Access): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const opening = floor.openings.find((item) => item.id === openingId)
+    if (!opening || opening.kind !== 'door' || opening.access === access) return null
+    return setDoorAccess(floor, openingId, access)
+  })
+}
+
+export function changeObjectNote(state: EditorState, editing: boolean, id: string, note: string): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const object = floor.objects.find((item) => item.id === id)
+    if (!object || object.note === note) return null
+    return setObjectNote(floor, id, note)
+  })
+}
+
+export function changeObjectTag(state: EditorState, editing: boolean, id: string, tag: string): EditorState {
+  return editFloor(state, editing, (floor) => addObjectTag(floor, id, tag))
+}
+
+export function changeObjectUntag(state: EditorState, editing: boolean, id: string, tag: string): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const object = floor.objects.find((item) => item.id === id)
+    if (!object || !object.tags.includes(tag)) return null
+    return removeObjectTag(floor, id, tag)
+  })
+}
+
+export function changeObjectSymbol(state: EditorState, editing: boolean, id: string, symbol: string): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const object = floor.objects.find((item) => item.id === id)
+    if (!object || object.symbol === symbol) return null
+    return setObjectSymbol(floor, id, symbol)
+  })
+}
+
+export function changeObjectColor(state: EditorState, editing: boolean, id: string, color: string | null): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const object = floor.objects.find((item) => item.id === id)
+    if (!object || object.color === color) return null
+    return setObjectColor(floor, id, color)
+  })
+}
+
+export function changeObjectLength(state: EditorState, editing: boolean, id: string, length: number): EditorState {
+  return editFloor(state, editing, (floor) => setObjectLength(floor, id, length))
+}
+
+export function changeObjectWidth(state: EditorState, editing: boolean, id: string, width: number): EditorState {
+  return editFloor(state, editing, (floor) => setObjectWidth(floor, id, width))
+}
+
+export function changeObjectStep(state: EditorState, editing: boolean, id: string, step: number): EditorState {
+  return editFloor(state, editing, (floor) => setObjectStep(floor, id, step))
+}
+
+export function changeObjectDirection(state: EditorState, editing: boolean, id: string, direction: StairDirection): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const object = floor.objects.find((item) => item.id === id)
+    if (!object || object.direction === direction) return null
+    return setObjectDirection(floor, id, direction)
+  })
+}
+
+export function changeAddChair(state: EditorState, editing: boolean, id: string): EditorState {
+  return editFloor(state, editing, (floor) => {
+    if (!floor.objects.some((item) => item.id === id && item.kind === 'table')) return null
+    return addChair(floor, id)
+  })
+}
+
+export function changeChairLength(state: EditorState, editing: boolean, objectId: string, chairId: string, length: number): EditorState {
+  return editFloor(state, editing, (floor) => setChairLength(floor, objectId, chairId, length))
+}
+
+export function changeChairWidth(state: EditorState, editing: boolean, objectId: string, chairId: string, width: number): EditorState {
+  return editFloor(state, editing, (floor) => setChairWidth(floor, objectId, chairId, width))
 }
