@@ -4,6 +4,8 @@ export const theme = {
   grid: '#e3e0d7',
   wall: '#4a4742',
   selected: '#3d7ea6',
+  /** Обводка того, что схватит нажатие. */
+  hover: '#3d7ea6',
   vertex: '#5c5852',
   ghost: 'rgba(74, 71, 66, 0.33)',
   ghostDash: 'rgba(74, 71, 66, 0.22)',

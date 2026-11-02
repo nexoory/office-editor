@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement } from 'react'
 import { GRID_STEP } from '../constants'
-import type { EditorState, PointerInfo } from './reduce'
+import type { EditorState, Hover, PointerInfo } from './reduce'
 import { activeFloor, cursorFor, ghostFloor } from './reduce'
+import { hitMatchesSelection } from '../geometry/hitTest'
 import { analyze, sameIds, type AnalyzedFace } from '../geometry/faces'
 import { formatLength } from '../geometry/formatLength'
 import { add, dist, interiorPoint, left, mul, norm, pointInPolygon, pointInRegion, projectSegment, sub } from '../geometry/math'
@@ -24,12 +25,14 @@ import {
 } from '../geometry/preview'
 import { OBJECTS } from '../objects/catalog'
 import { roomFill, roomInk, theme } from '../theme'
-import type { Floor, Point } from '../types'
+import type { Floor, Point, Selection } from '../types'
 import { wallEnds, wallGraphics, wallLengthOf } from '../geometry/walls'
-import { DoorLeaves, FloorObjects, PlacementGhost } from './figures'
+import { DoorLeaves, FloorObjects, ObjectHandles, PlacementGhost } from './figures'
 import { chairsOf } from '../objects/catalog'
 import { ROOM_ICON_SIZE, RoomGlyph, roomIconName } from '../objects/icons'
 import { chairPose } from '../objects/placement'
+
+type Pinch = { distance: number; cx: number; cy: number }
 
 export function Canvas(props: {
   state: EditorState
@@ -37,12 +40,20 @@ export function Canvas(props: {
   onPointerDown: (info: PointerInfo) => void
   onPointerMove: (info: PointerInfo) => void
   onPointerUp: (info: PointerInfo) => void
-  onWheel: (info: { sx: number; sy: number; deltaY: number; deltaMode: number; ctrl: boolean }) => void
+  onPointerCancel: () => void
+  onPointerLeave: () => void
+  onDoubleClick: (info: { sx: number; sy: number }) => void
+  onPinch: (info: { sx: number; sy: number; scale: number; dx: number; dy: number }) => void
+  onWheel: (info: { sx: number; sy: number; deltaY: number }) => void
 }) {
   const ref = useRef<SVGSVGElement>(null)
   const [size, setSize] = useState({ w: 1, h: 1 })
   const wheel = useRef(props.onWheel)
   wheel.current = props.onWheel
+  const touches = useRef(new Map<number, { x: number; y: number }>())
+  const pinch = useRef<Pinch | null>(null)
+  /** После щипка оставшийся палец не начинает жест, пока не отпустят все. */
+  const pinchLock = useRef(false)
 
   useEffect(() => {
     const element = ref.current
@@ -54,7 +65,7 @@ export function Canvas(props: {
     observer.observe(element)
     const onWheel = (event: WheelEvent) => {
       const origin = event.target instanceof Element ? event.target : event.target instanceof Node ? event.target.parentElement : null
-      if (origin?.closest('.place-menu, .legend, .icon-picker-list')) return
+      if (origin?.closest('.place-menu, .legend, .icon-picker-list, .wheel-field, .context-menu, .shortcuts')) return
       if (origin instanceof HTMLInputElement || origin instanceof HTMLTextAreaElement) return
       event.preventDefault()
       const rect = element.getBoundingClientRect()
@@ -62,8 +73,6 @@ export function Canvas(props: {
         sx: event.clientX - rect.left,
         sy: event.clientY - rect.top,
         deltaY: event.deltaY,
-        deltaMode: event.deltaMode,
-        ctrl: event.ctrlKey || event.metaKey,
       })
     }
     window.addEventListener('wheel', onWheel, { passive: false })
@@ -98,27 +107,99 @@ export function Canvas(props: {
       sx: event.clientX - rect.left,
       sy: event.clientY - rect.top,
       shift: event.shiftKey,
+      alt: event.altKey,
+      pointerType: event.pointerType,
     }
   }
+
+  const pinchOf = (): Pinch | null => {
+    const [a, b] = [...touches.current.values()]
+    if (!a || !b) return null
+    return { distance: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }
+  }
+
+  const releaseTouch = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (event.pointerType !== 'touch') return false
+    touches.current.delete(event.pointerId)
+    if (touches.current.size < 2) pinch.current = null
+    const locked = pinchLock.current
+    if (touches.current.size === 0) pinchLock.current = false
+    return locked
+  }
+
+  const hover = state.gesture || state.menu ? null : state.hover
+  const handleObject =
+    props.editing && state.tool === 'select' && state.selection?.kind === 'object'
+      ? floor.objects.find((item) => state.selection?.kind === 'object' && item.id === state.selection.id) ?? null
+      : null
+  const busy = !!state.gesture && state.gesture.type !== 'rotate-object' && state.gesture.type !== 'resize-object'
 
   return (
     <svg
       ref={ref}
       className="plan-canvas"
-      style={{ cursor: cursorFor(state) }}
+      style={{ cursor: cursorFor(state, props.editing) }}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => {
         const active = document.activeElement
         if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) active.blur()
+        if (event.button === 1) event.preventDefault()
         try {
           event.currentTarget.setPointerCapture(event.pointerId)
         } catch {
           // A pointer that is already gone cannot be captured; the gesture still starts.
         }
-        props.onPointerDown(locate(event))
+        const info = locate(event)
+        if (event.pointerType === 'touch') {
+          touches.current.set(event.pointerId, { x: info.sx, y: info.sy })
+          if (touches.current.size >= 2) {
+            props.onPointerCancel()
+            pinch.current = pinchOf()
+            pinchLock.current = true
+            return
+          }
+          if (pinchLock.current) return
+        }
+        props.onPointerDown(info)
       }}
-      onPointerMove={(event) => props.onPointerMove(locate(event))}
-      onPointerUp={(event) => props.onPointerUp(locate(event))}
+      onPointerMove={(event) => {
+        const info = locate(event)
+        if (event.pointerType === 'touch' && touches.current.has(event.pointerId)) {
+          touches.current.set(event.pointerId, { x: info.sx, y: info.sy })
+          const previous = pinch.current
+          if (previous) {
+            const current = pinchOf()
+            if (current) {
+              props.onPinch({
+                sx: previous.cx,
+                sy: previous.cy,
+                scale: current.distance / previous.distance,
+                dx: current.cx - previous.cx,
+                dy: current.cy - previous.cy,
+              })
+              pinch.current = current
+            }
+            return
+          }
+          if (pinchLock.current) return
+        }
+        props.onPointerMove(info)
+      }}
+      onPointerUp={(event) => {
+        if (releaseTouch(event)) return
+        props.onPointerUp(locate(event))
+      }}
+      onPointerCancel={(event) => {
+        releaseTouch(event)
+        props.onPointerCancel()
+      }}
+      onPointerLeave={(event) => {
+        if (event.buttons === 0) props.onPointerLeave()
+      }}
+      onDoubleClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect()
+        props.onDoubleClick({ sx: event.clientX - rect.left, sy: event.clientY - rect.top })
+      }}
     >
       <g transform={`translate(${state.view.panX} ${state.view.panY}) scale(${zoom})`}>
         <rect
@@ -338,6 +419,10 @@ export function Canvas(props: {
               />
             )
           })}
+        {hover && <HoverOutline floor={floor} analysis={analysis} hover={hover} selection={state.selection} zoom={zoom} />}
+        {handleObject && !busy && (
+          <ObjectHandles object={handleObject} zoom={zoom} active={hover?.kind === 'handle' ? hover.handle : null} />
+        )}
         {guides.map((guide, index) => (
           <line
             key={`guide${index}`}
@@ -494,8 +579,74 @@ function SmartGuides(props: { guides: AlignGuide[]; zoom: number }) {
   )
 }
 
+function HoverOutline(props: {
+  floor: Floor
+  analysis: ReturnType<typeof analyze>
+  hover: Hover
+  selection: Selection | null
+  zoom: number
+}) {
+  const { floor, hover, zoom } = props
+  if (hover.kind === 'handle' || hover.kind === 'empty') return null
+  if (hitMatchesSelection(hover, props.selection)) return null
+  const stroke = theme.hover
+  const width = 2 / zoom
+  if (hover.kind === 'vertex') {
+    const vertex = floor.vertices.find((item) => item.id === hover.id)
+    if (!vertex) return null
+    return <circle cx={vertex.x} cy={vertex.y} r={7 / zoom} fill="none" stroke={stroke} strokeWidth={width} pointerEvents="none" />
+  }
+  if (hover.kind === 'wall' || hover.kind === 'opening') {
+    const opening = hover.kind === 'opening' ? floor.openings.find((item) => item.id === hover.id) : null
+    const wall = floor.walls.find((item) => item.id === (opening ? opening.wallId : hover.id))
+    const ends = wall && wallEnds(floor, wall)
+    if (!wall || !ends) return null
+    const along = norm(sub(ends.b, ends.a))
+    const a = opening ? add(ends.a, mul(along, opening.offset)) : ends.a
+    const b = opening ? add(ends.a, mul(along, opening.offset + opening.width)) : ends.b
+    return (
+      <line
+        x1={a.x}
+        y1={a.y}
+        x2={b.x}
+        y2={b.y}
+        stroke={stroke}
+        strokeOpacity={0.4}
+        strokeWidth={wall.thickness + 6 / zoom}
+        pointerEvents="none"
+      />
+    )
+  }
+  if (hover.kind === 'object' || hover.kind === 'chair') {
+    const object = floor.objects.find((item) => item.id === (hover.kind === 'chair' ? hover.objectId : hover.id))
+    if (!object) return null
+    const chair = hover.kind === 'chair' ? chairsOf(object).find((item) => item.id === hover.chairId) : null
+    const pose = chair ? chairPose(object, chair) : object
+    return (
+      <polygon points={footprintPoints(pose, 2 / zoom)} fill="none" stroke={stroke} strokeWidth={width} pointerEvents="none" />
+    )
+  }
+  const room = floor.rooms.find((item) => item.id === hover.id)
+  const face = room && props.analysis.faces.find((item) => sameIds(item.vertexIds, room.vertexIds))
+  if (!face) return null
+  const shape = floorShape(floor, face)
+  return (
+    <path
+      d={pathOf(shape.outer, shape.holes)}
+      fill={stroke}
+      fillOpacity={0.06}
+      fillRule="evenodd"
+      stroke={stroke}
+      strokeOpacity={0.5}
+      strokeWidth={width}
+      pointerEvents="none"
+    />
+  )
+}
+
 function smartOverlay(state: EditorState, floor: Floor, preview: Preview | null): AlignGuide[] {
   const zoom = state.view.zoom
+  if (state.cursor?.alt) return []
   if (state.placing?.dragging) {
     const spec = OBJECTS[state.placing.kind]
     return matchAlignGuides(
@@ -557,6 +708,7 @@ function livePreview(state: EditorState): Preview | null {
     zoom: state.view.zoom,
     lockWallId: state.axisLock,
     chain: state.chain,
+    free: raw.alt,
   }).preview
 }
 

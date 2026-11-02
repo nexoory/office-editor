@@ -425,6 +425,38 @@ export function setOpeningWidth(floor: Floor, openingId: string, width: number):
 
 export function addOpening(floor: Floor, wallId: string, kind: OpeningKind): Floor {
   const wall = floor.walls.find((item) => item.id === wallId)
+  if (!wall) return floor
+  return addOpeningAround(floor, wallId, kind, wallLengthOf(floor, wall) / 2)
+}
+
+/** Проём центром в проекцию точки на стену; занятое место уступает ближайшему свободному промежутку. */
+export function addOpeningAt(floor: Floor, wallId: string, kind: OpeningKind, point: Point): Floor {
+  const wall = floor.walls.find((item) => item.id === wallId)
+  const ends = wall && wallEnds(floor, wall)
+  if (!wall || !ends) return floor
+  const proj = projectSegment(point, ends.a, ends.b)
+  return addOpeningAround(floor, wallId, kind, proj.t * wallLengthOf(floor, wall))
+}
+
+/** Новая точка на теле стены. Внутри проёма разрезать нельзя. */
+export function splitWallAt(
+  floor: Floor,
+  wallId: string,
+  point: Point,
+  selection: Selection | null,
+): { floor: Floor; vertexId: string } | null {
+  const wall = floor.walls.find((item) => item.id === wallId)
+  const ends = wall && wallEnds(floor, wall)
+  if (!wall || !ends) return null
+  const proj = projectSegment(point, ends.a, ends.b)
+  if (proj.t <= 1e-3 || proj.t >= 1 - 1e-3) return null
+  const split = splitWall(floor, wallId, proj.point)
+  if (!split) return null
+  return { vertexId: split.vertexId, floor: syncRooms(floor, split.floor, selection) }
+}
+
+function addOpeningAround(floor: Floor, wallId: string, kind: OpeningKind, center: number): Floor {
+  const wall = floor.walls.find((item) => item.id === wallId)
   if (!wall || wall.thickness <= 0) return floor
   const length = wallLengthOf(floor, wall)
   const placed = floor.openings.filter((opening) => opening.wallId === wallId).sort((a, b) => a.offset - b.offset)
@@ -439,7 +471,6 @@ export function addOpening(floor: Floor, wallId: string, kind: OpeningKind): Flo
     .map((gap) => ({ ...gap, width: Math.min(DEFAULT_OPENING_WIDTH, gap.end - gap.start) }))
     .filter((gap) => gap.width >= MIN_SPAN)
   if (usable.length === 0) return floor
-  const center = length / 2
   const holding = usable.find((gap) => center > gap.start + 1e-6 && center < gap.end - 1e-6)
   const gap = holding ?? usable.slice().sort((a, b) => {
     const da = Math.abs((a.start + a.end) / 2 - center)

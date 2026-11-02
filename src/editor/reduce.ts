@@ -8,9 +8,12 @@ import {
   WHEEL_BURST_MS,
   WHEEL_MS,
   ZOOM_FACTOR,
+  KEY_ZOOM,
+  NUDGE_SERIES_MS,
 } from '../constants'
 import {
   addOpening,
+  addOpeningAt,
   addSegment,
   applyFractions,
   captureFractions,
@@ -26,6 +29,7 @@ import {
   setOpeningWidth,
   setPartition,
   setThickness,
+  splitWallAt,
   thicknessAlongGhost,
   translateVertices,
   withVertex,
@@ -41,10 +45,12 @@ import {
   translateProbes,
 } from '../geometry/align'
 import { layoutOk, movedWallIds } from '../geometry/collide'
-import { analyze, sameIds } from '../geometry/faces'
-import { hitMatchesSelection, hitTest, type Hit } from '../geometry/hitTest'
-import { interiorPoint, pointInPolygon } from '../geometry/math'
+import { ringPoints } from '../geometry/faces'
+import { hitGhostWall, hitTest, selectionAnchor, type Hit } from '../geometry/hitTest'
+import { dot } from '../geometry/math'
 import { add, constrainAngle, left, lerp, mul, norm, projectSegment, sub } from '../geometry/math'
+import { handleAt, type ObjectHandle } from '../objects/handles'
+import { classifyPress, isMovableHit, type PointerInfo, type PressIntent, type Tool } from './input'
 import {
   addChair,
   addObjectTag,
@@ -78,8 +84,10 @@ import { wallEnds } from '../geometry/walls'
 import { pushSnap, takeSnap, type HistorySnap } from '../history'
 import type { Access, Document, DoorSide, Floor, Hinge, ObjectKind, OpeningKind, Point, Selection, StairDirection, View } from '../types'
 
+export type { PointerInfo, Tool } from './input'
+
 export type Gesture =
-  | { type: 'pending'; button: 0 | 2; sx: number; sy: number; hit: Hit }
+  | { type: 'pending'; intent: PressIntent; sx: number; sy: number; hit: Hit }
   | { type: 'pan'; sx: number; sy: number }
   | { type: 'draw'; anchor: SegmentEnd }
   | {
@@ -131,7 +139,9 @@ export type EditorState = {
   future: HistorySnap[]
   chain: SegmentEnd[] | null
   axisLock: string | null
-  cursor: { x: number; y: number; shift: boolean } | null
+  cursor: Cursor | null
+  /** Последняя точка указателя на холсте: по ней пересчитывается превью, когда меняются модификаторы. */
+  pointer: { sx: number; sy: number } | null
   gesture: Gesture | null
   textFocused: boolean
   wheel: { at: number; key: string } | null
@@ -140,9 +150,20 @@ export type EditorState = {
   placing: Placing | null
   legendFilter: ObjectKind | null
   browsing: boolean
+  tool: Tool
+  hover: Hover | null
+  menu: ContextMenuState | null
+  spaceHeld: boolean
+  help: boolean
+  /** Комната, чьё поле названия должно получить фокус; снимается, когда фокус поставлен. */
+  renaming: string | null
 }
 
-export type PointerInfo = { button: number; sx: number; sy: number; shift: boolean }
+export type Cursor = { x: number; y: number; shift: boolean; alt: boolean }
+
+export type Hover = Hit | { kind: 'handle'; handle: ObjectHandle }
+
+export type ContextMenuState = { sx: number; sy: number; world: Point; hit: Hit; ghostWallId: string | null }
 
 export function createEditorState(saved?: { document: Document; activeFloorId: string; view: View } | null): EditorState {
   const document = saved?.document ?? createDocument()
@@ -159,6 +180,7 @@ export function createEditorState(saved?: { document: Document; activeFloorId: s
     chain: null,
     axisLock: null,
     cursor: null,
+    pointer: null,
     gesture: null,
     textFocused: false,
     wheel: null,
@@ -167,6 +189,12 @@ export function createEditorState(saved?: { document: Document; activeFloorId: s
     placing: null,
     legendFilter: null,
     browsing: false,
+    tool: 'select',
+    hover: null,
+    menu: null,
+    spaceHeld: false,
+    help: false,
+    renaming: null,
   }
 }
 
@@ -267,7 +295,15 @@ export function switchFloor(state: EditorState, delta: number): EditorState {
   const index = state.document.floors.findIndex((floor) => floor.id === state.activeFloorId)
   const floor = state.document.floors[index + delta]
   if (!floor) return state
-  return { ...abortGesture(state), activeFloorId: floor.id, selection: null, legendFilter: null, placing: null }
+  return {
+    ...abortGesture(state),
+    activeFloorId: floor.id,
+    selection: null,
+    legendFilter: null,
+    placing: null,
+    menu: null,
+    hover: null,
+  }
 }
 
 export function addFloor(state: EditorState, editing: boolean, delta: -1 | 1): EditorState {
@@ -312,12 +348,12 @@ export function renameFloor(state: EditorState, editing: boolean, name: string):
 }
 
 export function raiseAll(state: EditorState, editing: boolean): EditorState {
-  if (!editing) return state
+  if (!editing) return closeMenu(state)
   const ghost = ghostFloor(state)
-  if (!ghost) return state
+  if (!ghost) return closeMenu(state)
   const raised = raiseGhostWalls(activeFloor(state), ghost, null, state.selection)
-  if (raised.created.length === 0) return state
-  return remember(state, { ...paint(state, raised.floor), chain: null, axisLock: null })
+  if (raised.created.length === 0) return closeMenu(state)
+  return remember(state, { ...paint(state, raised.floor), chain: null, axisLock: null, menu: null })
 }
 
 export function deleteSelection(state: EditorState, editing: boolean): EditorState {
@@ -369,32 +405,53 @@ function zoomAt(state: EditorState, sx: number, sy: number, deltaY: number): Edi
   }
 }
 
-export function onWheel(
-  state: EditorState,
-  info: { sx: number; sy: number; deltaY: number; deltaMode: number; ctrl: boolean },
-  editing: boolean,
-): EditorState {
-  const selection = state.selection
-  const adjustable =
-    editing &&
-    !info.ctrl &&
-    selection &&
-    (selection.kind === 'wall' || selection.kind === 'opening')
-  if (!adjustable) return zoomAt(state, info.sx, info.sy, info.deltaY)
+export function onWheel(state: EditorState, info: { sx: number; sy: number; deltaY: number }): EditorState {
+  if (info.deltaY === 0) return state
+  return { ...zoomAt(state, info.sx, info.sy, info.deltaY), menu: null }
+}
+
+/** Колесо над полем толщины: шаг за щелчок, ряд прокрутки — один шаг истории. */
+export function wheelWallThickness(state: EditorState, editing: boolean, wallId: string, deltaY: number): EditorState {
+  if (!editing || deltaY === 0) return state
   const floor = activeFloor(state)
-  const dir: 1 | -1 = info.deltaY > 0 ? -1 : 1
-  const key = `${selection.kind}:${selection.id}`
-  if (selection.kind === 'wall') {
-    const wall = floor.walls.find((item) => item.id === selection.id)
-    if (!wall) return state
-    const nextFloor = setThickness(floor, wall.id, wall.thickness + dir)
-    const applied = nextFloor.walls.find((item) => item.id === wall.id)
-    if (!applied || applied.thickness === wall.thickness) return state
-    return finishWheel(state, paint(state, nextFloor), key, WHEEL_MS)
-  }
-  const opening = floor.openings.find((item) => item.id === selection.id)
+  const wall = floor.walls.find((item) => item.id === wallId)
+  if (!wall) return state
+  const dir: 1 | -1 = deltaY > 0 ? -1 : 1
+  const nextFloor = setThickness(floor, wall.id, wall.thickness + dir)
+  const applied = nextFloor.walls.find((item) => item.id === wall.id)
+  if (!applied || applied.thickness === wall.thickness) return state
+  return finishWheel(state, paint(state, nextFloor), `wall:${wall.id}`, WHEEL_MS)
+}
+
+/** Колесо над полем ширины проёма: прежний разгон ряда. */
+export function wheelOpeningWidth(
+  state: EditorState,
+  editing: boolean,
+  openingId: string,
+  deltaY: number,
+  deltaMode: number,
+): EditorState {
+  if (!editing || deltaY === 0) return state
+  const floor = activeFloor(state)
+  const opening = floor.openings.find((item) => item.id === openingId)
   if (!opening) return state
-  return widenOpening(state, floor, opening.id, opening.width, dir, info.deltaY, info.deltaMode, key)
+  const dir: 1 | -1 = deltaY > 0 ? -1 : 1
+  return widenOpening(state, floor, opening.id, opening.width, dir, deltaY, deltaMode, `opening:${opening.id}`)
+}
+
+export function changeWallThickness(state: EditorState, editing: boolean, wallId: string, thickness: number): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const wall = floor.walls.find((item) => item.id === wallId)
+    if (!wall) return null
+    return setThickness(floor, wallId, thickness)
+  })
+}
+
+export function changeOpeningWidth(state: EditorState, editing: boolean, openingId: string, width: number): EditorState {
+  return editFloor(state, editing, (floor) => {
+    if (!floor.openings.some((item) => item.id === openingId)) return null
+    return setOpeningWidth(floor, openingId, width)
+  })
 }
 
 function widenOpening(
@@ -459,6 +516,8 @@ export function createOpening(state: EditorState, editing: boolean, kind: Openin
 
 export function escape(state: EditorState): EditorState {
   if (state.textFocused) return state
+  if (state.help) return { ...state, help: false }
+  if (state.menu) return { ...state, menu: null }
   if (state.placing?.dragging) return { ...state, placing: null }
   if (state.placing) return { ...state, placing: null, paletteOpen: false }
   if (state.paletteOpen) return { ...state, paletteOpen: false }
@@ -476,7 +535,9 @@ export function escape(state: EditorState): EditorState {
     return { ...paint(state, state.gesture.floor), gesture: null, axisLock: null }
   }
   if (state.chain) return { ...state, chain: null, axisLock: null, gesture: null }
-  return { ...state, selection: null }
+  if (state.selection) return { ...state, selection: null }
+  if (state.tool !== 'select') return { ...state, tool: 'select' }
+  return state
 }
 
 function passedThreshold(gesture: { sx: number; sy: number }, sx: number, sy: number): boolean {
@@ -527,24 +588,39 @@ function finishMove(state: EditorState, history: HistorySnap, origin: Floor): Ed
   return { ...next, past: pushSnap(state.past, history), future: [], wheel: null }
 }
 
+function selectedObjectHandle(state: EditorState, world: Point, editing: boolean): ObjectHandle | null {
+  if (!editing || state.tool !== 'select' || state.selection?.kind !== 'object') return null
+  const selection = state.selection
+  const object = activeFloor(state).objects.find((item) => item.id === selection.id)
+  return object ? handleAt(object, world, state.view.zoom) : null
+}
+
 export function onPointerDown(state: EditorState, info: PointerInfo, editing: boolean): EditorState {
   if (state.gesture) return state
-  if (info.button !== 0 && info.button !== 2) return state
-  if (info.button === 2 && !editing) return state
   const world = screenToWorld(state.view, info.sx, info.sy)
-  const hit = hitTest(
-    activeFloor(state),
-    ghostFloor(state),
-    world,
-    state.view.zoom,
-    editing,
-    info.button === 2 ? 'right' : 'left',
-  )
-  return {
+  const base: EditorState = {
     ...state,
-    cursor: { x: world.x, y: world.y, shift: info.shift },
-    gesture: { type: 'pending', button: info.button, sx: info.sx, sy: info.sy, hit },
+    menu: null,
+    pointer: { sx: info.sx, sy: info.sy },
+    cursor: { x: world.x, y: world.y, shift: info.shift, alt: info.alt },
   }
+  if (info.button === 0) {
+    const handle = state.spaceHeld ? null : selectedObjectHandle(state, world, editing)
+    if (handle) return handle === 'rotate' ? beginRotate(base, world) : beginResize(base, world)
+  }
+  const hit = hitTest(activeFloor(state), world, state.view.zoom, editing)
+  const intent = classifyPress({
+    button: info.button,
+    editing,
+    tool: state.tool,
+    spaceHeld: state.spaceHeld,
+    hit,
+    selection: state.selection,
+  })
+  if (!intent) return state
+  if (intent === 'pan') return { ...base, hover: null, gesture: { type: 'pan', sx: info.sx, sy: info.sy } }
+  const selection = intent === 'target' ? selectionFromHit(hit, editing) : base.selection
+  return { ...base, selection, gesture: { type: 'pending', intent, sx: info.sx, sy: info.sy, hit } }
 }
 
 export function onPointerMove(state: EditorState, info: PointerInfo, editing: boolean): EditorState {
@@ -556,30 +632,32 @@ export function onPointerMove(state: EditorState, info: PointerInfo, editing: bo
       }
     : state.view
   const world = screenToWorld(view, info.sx, info.sy)
+  const alt = info.alt
   let next: EditorState = {
     ...state,
     view,
-    cursor: { x: world.x, y: world.y, shift: info.shift },
+    pointer: { sx: info.sx, sy: info.sy },
+    cursor: { x: world.x, y: world.y, shift: info.shift, alt },
     gesture: state.gesture?.type === 'pan' ? { type: 'pan', sx: info.sx, sy: info.sy } : state.gesture,
   }
   const gesture = next.gesture
   if (gesture?.type === 'pending' && passedThreshold(gesture, info.sx, info.sy)) {
-    if (gesture.button === 0) {
-      next = { ...next, gesture: { type: 'pan', sx: info.sx, sy: info.sy } }
-    } else if (!next.chain && editing) {
-      const down = screenToWorld(state.view, gesture.sx, gesture.sy)
-      if (hitMatchesSelection(gesture.hit, next.selection)) next = beginMove(next, down)
-      else {
-        const anchor = anchorAt(activeFloor(next), ghostFloor(next), down, next.view.zoom, null)
-        next = { ...next, selection: null, axisLock: anchor.lockWallId, gesture: { type: 'draw', anchor: anchor.point } }
-      }
+    const down = screenToWorld(state.view, gesture.sx, gesture.sy)
+    if (gesture.intent === 'target' && editing) {
+      next = beginMove(next, down)
+    } else if (gesture.intent === 'floor' || gesture.intent === 'secondary') {
+      const caught = { ...view, panX: view.panX + info.sx - gesture.sx, panY: view.panY + info.sy - gesture.sy }
+      next = { ...next, view: caught, menu: null, hover: null, gesture: { type: 'pan', sx: info.sx, sy: info.sy } }
+    } else if (gesture.intent === 'draw' && editing && !next.chain) {
+      const anchor = anchorAt(activeFloor(next), ghostFloor(next), down, next.view.zoom, null, alt)
+      next = { ...next, selection: null, axisLock: anchor.lockWallId, gesture: { type: 'draw', anchor: anchor.point } }
     }
   }
-  if (next.gesture?.type === 'move-vertex') next = dragVertex(next, world, info.shift)
-  else if (next.gesture?.type === 'move-wall') next = dragWall(next, world, info.shift)
-  else if (next.gesture?.type === 'move-room') next = dragRoom(next, world, info.shift)
+  if (next.gesture?.type === 'move-vertex') next = dragVertex(next, world, info.shift, alt)
+  else if (next.gesture?.type === 'move-wall') next = dragWall(next, world, info.shift, alt)
+  else if (next.gesture?.type === 'move-room') next = dragRoom(next, world, info.shift, alt)
   else if (next.gesture?.type === 'move-opening') next = dragOpening(next, world)
-  else if (next.gesture?.type === 'move-object') next = dragObject(next, world, info.shift)
+  else if (next.gesture?.type === 'move-object') next = dragObject(next, world, info.shift, alt)
   else if (next.gesture?.type === 'rotate-object') next = dragRotate(next, world, info.shift)
   else if (next.gesture?.type === 'resize-object') next = dragResize(next, world, info.shift)
   else if (next.gesture?.type === 'move-chair') next = dragChair(next, world)
@@ -596,11 +674,57 @@ export function onPointerMove(state: EditorState, info: PointerInfo, editing: bo
         zoom: next.view.zoom,
         lockWallId: next.axisLock,
         chain: next.chain,
+        free: alt,
       })
       next = { ...next, axisLock: preview.lockWallId }
     }
   }
+  if (!next.gesture && info.pointerType !== 'touch') next = { ...next, hover: hoverAt(next, world, editing) }
   return next
+}
+
+function hoverAt(state: EditorState, world: Point, editing: boolean): Hover | null {
+  if (state.spaceHeld || state.menu || (editing && state.tool === 'wall')) return null
+  const handle = selectedObjectHandle(state, world, editing)
+  if (handle) return { kind: 'handle', handle }
+  const hit = hitTest(activeFloor(state), world, state.view.zoom, editing)
+  return hit.kind === 'empty' ? null : hit
+}
+
+export function pointerLeave(state: EditorState): EditorState {
+  if (!state.hover && !state.pointer) return state
+  return { ...state, hover: null, pointer: state.gesture ? state.pointer : null }
+}
+
+/** Shift и Alt нажали или отпустили без движения мыши: превью и перенос пересчитываются на месте. */
+export function setModifiers(state: EditorState, shift: boolean, alt: boolean, editing: boolean): EditorState {
+  const cursor = state.cursor
+  if (cursor && cursor.shift === shift && cursor.alt === alt) return state
+  if (!state.pointer) return cursor ? { ...state, cursor: { ...cursor, shift, alt } } : state
+  return onPointerMove(state, { button: -1, sx: state.pointer.sx, sy: state.pointer.sy, shift, alt }, editing)
+}
+
+/** Второй палец или потерянный указатель: незаконченный жест откатывается, цепочка остаётся. */
+export function cancelPointer(state: EditorState): EditorState {
+  const gesture = state.gesture
+  if (!gesture) return state
+  if (gesture.type === 'pending' || gesture.type === 'pan' || gesture.type === 'draw') {
+    return { ...state, gesture: null, axisLock: state.chain ? state.axisLock : null }
+  }
+  return { ...paint(state, gesture.floor), gesture: null, axisLock: null }
+}
+
+export function pinchView(
+  state: EditorState,
+  info: { sx: number; sy: number; scale: number; dx: number; dy: number },
+): EditorState {
+  const zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.view.zoom * info.scale))
+  const world = screenToWorld(state.view, info.sx, info.sy)
+  return {
+    ...state,
+    menu: null,
+    view: { zoom, panX: info.sx + info.dx - world.x * zoom, panY: info.sy + info.dy - world.y * zoom },
+  }
 }
 
 function beginMove(state: EditorState, origin: Point): EditorState {
@@ -701,7 +825,7 @@ function beginRotate(state: EditorState, origin: Point): EditorState {
   }
 }
 
-function dragVertex(state: EditorState, cursor: Point, shift: boolean): EditorState {
+function dragVertex(state: EditorState, cursor: Point, shift: boolean, alt: boolean): EditorState {
   const gesture = state.gesture
   if (gesture?.type !== 'move-vertex') return state
   let desired = shift ? constrainAngle(gesture.origin, cursor) : cursor
@@ -712,20 +836,20 @@ function dragVertex(state: EditorState, cursor: Point, shift: boolean): EditorSt
     floor: gesture.floor,
     ghost: ghostFloor(state),
     zoom: state.view.zoom,
-    allowGhost: true,
-    lockWallId: state.axisLock,
+    allowGhost: !alt,
+    lockWallId: alt ? null : state.axisLock,
     excludeVertexIds: [gesture.id],
     excludeWallIds: incidentWallIds(gesture.floor, gesture.id),
     ray,
   })
   if (snapped.snap.kind === 'wall') {
-    const aligned = alignAlongWall(gesture.floor, snapped.snap, [gesture.id], state.view.zoom)
+    const aligned = alt ? snapped.snap.point : alignAlongWall(gesture.floor, snapped.snap, [gesture.id], state.view.zoom)
     const point = vertexMove(gesture.floor, gesture.id, aligned, gesture.fractions) ? aligned : snapped.snap.point
     if (vertexMove(gesture.floor, gesture.id, point, gesture.fractions)) desired = point
   } else if (snapped.snap.kind !== 'free') {
     const point = snapped.snap.point
     if (vertexMove(gesture.floor, gesture.id, point, gesture.fractions)) desired = point
-  } else {
+  } else if (!alt) {
     const dir = shift && ray ? { x: Math.cos(ray.angle), y: Math.sin(ray.angle) } : null
     const point = alignDragPoint(gesture.floor, desired, [gesture.id], state.view.zoom, dir)
     if (vertexMove(gesture.floor, gesture.id, point, gesture.fractions)) desired = point
@@ -736,7 +860,7 @@ function dragVertex(state: EditorState, cursor: Point, shift: boolean): EditorSt
   return { ...paint(state, floor), axisLock: snapped.lockWallId }
 }
 
-function dragWall(state: EditorState, cursor: Point, shift: boolean): EditorState {
+function dragWall(state: EditorState, cursor: Point, shift: boolean, alt: boolean): EditorState {
   const gesture = state.gesture
   if (gesture?.type !== 'move-wall') return state
   const wall = gesture.floor.walls.find((item) => item.id === gesture.id)
@@ -748,7 +872,7 @@ function dragWall(state: EditorState, cursor: Point, shift: boolean): EditorStat
     const amount = delta.x * normal.x + delta.y * normal.y
     delta = mul(normal, amount)
   }
-  delta = alignDragDelta(
+  if (!alt) delta = alignDragDelta(
     gesture.floor,
     translateProbes(geometryProbes(gesture.floor, [wall.a, wall.b]), delta),
     [wall.a, wall.b],
@@ -763,12 +887,12 @@ function dragWall(state: EditorState, cursor: Point, shift: boolean): EditorStat
   return paint(state, floor)
 }
 
-function dragRoom(state: EditorState, cursor: Point, shift: boolean): EditorState {
+function dragRoom(state: EditorState, cursor: Point, shift: boolean, alt: boolean): EditorState {
   const gesture = state.gesture
   if (gesture?.type !== 'move-room') return state
   const raw = sub(cursor, gesture.origin)
   let delta = shift ? (Math.abs(raw.x) >= Math.abs(raw.y) ? { x: raw.x, y: 0 } : { x: 0, y: raw.y }) : raw
-  delta = alignDragDelta(
+  if (!alt) delta = alignDragDelta(
     gesture.floor,
     translateProbes(geometryProbes(gesture.floor, gesture.vertexIds), delta),
     gesture.vertexIds,
@@ -830,13 +954,14 @@ function alignDragDelta(
   return add(base, correction)
 }
 
-function dragObject(state: EditorState, cursor: Point, shift: boolean): EditorState {
+function dragObject(state: EditorState, cursor: Point, shift: boolean, alt: boolean): EditorState {
   const gesture = state.gesture
   if (gesture?.type !== 'move-object') return state
   const delta = axisDelta(sub(cursor, gesture.origin), shift)
   const object = gesture.floor.objects.find((item) => item.id === gesture.id)
   if (!object) return state
   const at = { ...object, x: gesture.start.x + delta.x, y: gesture.start.y + delta.y }
+  if (alt) return paint(state, moveObjectTo(gesture.floor, gesture.id, at.x, at.y))
   const correction = snapToAlignments(
     objectProbes(at),
     collectAlignRefs(gesture.floor, [], [object.id]),
@@ -863,19 +988,6 @@ function beginResize(state: EditorState, origin: Point): EditorState {
       history: takeSnap(state.document, state.activeFloorId),
     },
   }
-}
-
-/** Ручки у плашки: жест начинается сразу, без поиска точки на контуре предмета. */
-export function startObjectHandle(
-  state: EditorState,
-  kind: 'rotate' | 'resize',
-  info: PointerInfo,
-  editing: boolean,
-): EditorState {
-  if (!editing || state.gesture || state.selection?.kind !== 'object') return state
-  const origin = screenToWorld(state.view, info.sx, info.sy)
-  const next = { ...state, cursor: { x: origin.x, y: origin.y, shift: info.shift } }
-  return kind === 'rotate' ? beginRotate(next, origin) : beginResize(next, origin)
 }
 
 function dragResize(state: EditorState, cursor: Point, shift: boolean): EditorState {
@@ -927,9 +1039,10 @@ function commitSegment(
 
 export function onPointerUp(state: EditorState, info: PointerInfo, editing: boolean): EditorState {
   const gesture = state.gesture
-  if (!gesture) return { ...state, cursor: { ...screenToWorld(state.view, info.sx, info.sy), shift: info.shift } }
   const world = screenToWorld(state.view, info.sx, info.sy)
-  if (gesture.type === 'pan') return { ...state, gesture: null, cursor: { x: world.x, y: world.y, shift: info.shift } }
+  const cursor: Cursor = { x: world.x, y: world.y, shift: info.shift, alt: info.alt }
+  if (!gesture) return { ...state, cursor }
+  if (gesture.type === 'pan') return { ...state, gesture: null, cursor }
   if (gesture.type === 'draw') {
     const preview = computePreview({
       floor: activeFloor(state),
@@ -941,12 +1054,13 @@ export function onPointerUp(state: EditorState, info: PointerInfo, editing: bool
       zoom: state.view.zoom,
       lockWallId: state.axisLock,
       chain: null,
+      free: info.alt,
     })
-    let next: EditorState = { ...state, gesture: null, axisLock: null, cursor: { x: world.x, y: world.y, shift: info.shift } }
+    let next: EditorState = { ...state, gesture: null, axisLock: null, cursor }
     if (preview.preview.valid) {
       const committed = commitSegment(state, gesture.anchor, preview.preview.end)
       if (committed) {
-        next = remember(state, { ...committed.state, gesture: null, axisLock: null, selection: null, chain: null })
+        next = remember(state, { ...committed.state, gesture: null, axisLock: null, selection: null, chain: null, cursor })
       }
     }
     return next
@@ -961,48 +1075,34 @@ export function onPointerUp(state: EditorState, info: PointerInfo, editing: bool
     gesture.type === 'resize-object' ||
     gesture.type === 'move-chair'
   ) {
-    return finishMove({ ...state, cursor: { x: world.x, y: world.y, shift: info.shift } }, gesture.history, gesture.floor)
+    return finishMove({ ...state, cursor }, gesture.history, gesture.floor)
   }
   if (gesture.type !== 'pending') return state
-  if (gesture.button === 0) {
-    const selection = selectionFromHit(gesture.hit, editing)
-    return { ...state, gesture: null, selection }
+  const done: EditorState = { ...state, gesture: null, cursor }
+  if (gesture.intent === 'target') return done
+  if (gesture.intent === 'floor') return { ...done, selection: selectionFromHit(gesture.hit, editing) }
+  if (gesture.intent === 'secondary') {
+    if (!editing) return done
+    return {
+      ...done,
+      selection: selectionFromHit(gesture.hit, editing),
+      hover: null,
+      menu: {
+        sx: info.sx,
+        sy: info.sy,
+        world,
+        hit: gesture.hit,
+        ghostWallId: hitGhostWall(activeFloor(state), ghostFloor(state), world, state.view.zoom),
+      },
+    }
   }
-  if (!editing) return { ...state, gesture: null }
-  if (state.chain) return commitChain({ ...state, gesture: null, cursor: { x: world.x, y: world.y, shift: info.shift } }, world, info.shift)
-  const hit = gesture.hit
-  if (hit.kind === 'ghost-wall') {
-    const ghost = ghostFloor(state)
-    if (!ghost) return { ...state, gesture: null }
-    const raised = raiseGhostWalls(activeFloor(state), ghost, hit.id, state.selection)
-    if (raised.created.length === 0) return { ...state, gesture: null }
-    const next = paint(state, raised.floor)
-    return remember(state, {
-      ...next,
-      gesture: null,
-      chain: null,
-      axisLock: null,
-      selection: { kind: 'wall', id: raised.created[0] },
-    })
-  }
-  if (
-    (hit.kind === 'wall' && state.selection?.kind === 'wall' && state.selection.id === hit.id) ||
-    (hit.kind === 'opening' && state.selection?.kind === 'opening' && state.selection.id === hit.id)
-  ) {
-    return { ...state, gesture: null }
-  }
-  const anchor = anchorAt(activeFloor(state), ghostFloor(state), world, state.view.zoom, state.axisLock)
-  return {
-    ...state,
-    gesture: null,
-    selection: null,
-    chain: [anchor.point],
-    axisLock: anchor.lockWallId,
-    cursor: { x: world.x, y: world.y, shift: info.shift },
-  }
+  if (!editing) return done
+  if (state.chain) return commitChain(done, world, info.shift, info.alt)
+  const anchor = anchorAt(activeFloor(state), ghostFloor(state), world, state.view.zoom, state.axisLock, info.alt)
+  return { ...done, selection: null, chain: [anchor.point], axisLock: anchor.lockWallId }
 }
 
-function commitChain(state: EditorState, world: Point, shift: boolean): EditorState {
+function commitChain(state: EditorState, world: Point, shift: boolean, alt: boolean): EditorState {
   const chain = state.chain
   if (!chain || chain.length === 0) return state
   const preview = computePreview({
@@ -1015,6 +1115,7 @@ function commitChain(state: EditorState, world: Point, shift: boolean): EditorSt
     zoom: state.view.zoom,
     lockWallId: state.axisLock,
     chain,
+    free: alt,
   })
   if (!preview.preview.valid) return { ...state, axisLock: preview.lockWallId }
   const committed = commitSegment(state, chain[chain.length - 1], preview.preview.end)
@@ -1039,22 +1140,33 @@ function commitChain(state: EditorState, world: Point, shift: boolean): EditorSt
   })
 }
 
-export function cursorFor(state: EditorState): string {
-  if (state.gesture?.type === 'pan') return 'grabbing'
-  if (state.chain || state.gesture?.type === 'draw') return 'crosshair'
+/** Цепочку закончили: поставленные сегменты остаются, незафиксированный исчезает. */
+export function finishChain(state: EditorState): EditorState {
+  if (!state.chain && state.gesture?.type !== 'draw') return state
+  return { ...state, chain: null, axisLock: null, gesture: state.gesture?.type === 'draw' ? null : state.gesture }
+}
+
+export function cursorFor(state: EditorState, editing: boolean): string {
+  const gesture = state.gesture
+  if (gesture?.type === 'pan') return 'grabbing'
+  if (state.spaceHeld) return 'grab'
+  if (state.chain || gesture?.type === 'draw' || (editing && state.tool === 'wall')) return 'crosshair'
+  if (gesture?.type === 'rotate-object' || gesture?.type === 'resize-object') return 'grabbing'
   if (
-    state.gesture?.type === 'move-vertex' ||
-    state.gesture?.type === 'move-wall' ||
-    state.gesture?.type === 'move-room' ||
-    state.gesture?.type === 'move-opening' ||
-    state.gesture?.type === 'move-object' ||
-    state.gesture?.type === 'rotate-object' ||
-    state.gesture?.type === 'resize-object' ||
-    state.gesture?.type === 'move-chair'
+    gesture?.type === 'move-vertex' ||
+    gesture?.type === 'move-wall' ||
+    gesture?.type === 'move-room' ||
+    gesture?.type === 'move-opening' ||
+    gesture?.type === 'move-object' ||
+    gesture?.type === 'move-chair'
   ) {
     return 'move'
   }
-  return 'default'
+  const hover = state.hover
+  if (!hover || gesture) return 'default'
+  if (hover.kind === 'handle') return hover.handle === 'rotate' ? 'grab' : 'nwse-resize'
+  if (isMovableHit(hover, state.selection, editing)) return 'move'
+  return 'pointer'
 }
 
 function selectionFromHit(hit: Hit, editing: boolean): Selection | null {
@@ -1086,19 +1198,22 @@ export function beginPlace(state: EditorState, kind: ObjectKind, sx: number, sy:
   }
 }
 
-export function movePlace(state: EditorState, sx: number, sy: number): EditorState {
+export function movePlace(state: EditorState, sx: number, sy: number, alt: boolean): EditorState {
   const placing = state.placing
   if (!placing) return state
   const dragging = placing.dragging || Math.hypot(sx - placing.originX, sy - placing.originY) >= DRAG_THRESHOLD_PX
   const world = screenToWorld(state.view, sx, sy)
   const spec = OBJECTS[placing.kind]
-  const correction = snapToAlignments(
-    objectProbes({ x: world.x, y: world.y, rotation: 0, length: spec.length, width: spec.width }),
-    collectAlignRefs(activeFloor(state), [], []),
-    alignThreshold(state.view.zoom),
-    null,
-  )
-  return { ...state, placing: { ...placing, x: world.x + correction.x, y: world.y + correction.y, dragging } }
+  const correction = alt
+    ? { x: 0, y: 0 }
+    : snapToAlignments(
+        objectProbes({ x: world.x, y: world.y, rotation: 0, length: spec.length, width: spec.width }),
+        collectAlignRefs(activeFloor(state), [], []),
+        alignThreshold(state.view.zoom),
+        null,
+      )
+  const cursor = state.cursor ? { ...state.cursor, alt } : state.cursor
+  return { ...state, cursor, placing: { ...placing, x: world.x + correction.x, y: world.y + correction.y, dragging } }
 }
 
 export function cancelPlace(state: EditorState): EditorState {
@@ -1140,6 +1255,8 @@ export function setBrowsing(state: EditorState, browsing: boolean): EditorState 
     selection,
     paletteOpen: browsing ? false : state.paletteOpen,
     placing: null,
+    menu: null,
+    hover: null,
   }
 }
 
@@ -1148,30 +1265,251 @@ export function setLegendFilter(state: EditorState, kind: ObjectKind | null): Ed
   return { ...state, legendFilter: kind }
 }
 
-export function centerOnRoom(state: EditorState, roomId: string, width: number, height: number): EditorState {
-  const floor = activeFloor(state)
-  const room = floor.rooms.find((item) => item.id === roomId)
-  if (!room) return state
-  const face = analyze(floor).faces.find((item) => sameIds(item.vertexIds, room.vertexIds))
-  if (!face || face.outer.length === 0) return state
-  let x = 0
-  let y = 0
-  for (const point of face.outer) {
-    x += point.x
-    y += point.y
+type Box = { minX: number; minY: number; maxX: number; maxY: number }
+
+function boxOf(points: Point[]): Box | null {
+  if (points.length === 0) return null
+  const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+  for (const point of points) {
+    box.minX = Math.min(box.minX, point.x)
+    box.minY = Math.min(box.minY, point.y)
+    box.maxX = Math.max(box.maxX, point.x)
+    box.maxY = Math.max(box.maxY, point.y)
   }
-  const centroid = { x: x / face.outer.length, y: y / face.outer.length }
-  const point = pointInPolygon(centroid, face.outer) ? centroid : interiorPoint(face.outer)
+  return box
+}
+
+/** Рамка ложится в экран с отступом; масштаб не поднимается выше `maxZoom`. */
+function fitBox(state: EditorState, box: Box, width: number, height: number, pad: number, maxZoom: number): EditorState {
+  const w = Math.max(box.maxX - box.minX, 1e-6)
+  const h = Math.max(box.maxY - box.minY, 1e-6)
+  const fit = Math.min((width - pad * 2) / w, (height - pad * 2) / h)
+  const zoom = Math.max(MIN_ZOOM, Math.min(maxZoom, MAX_ZOOM, fit))
+  const cx = (box.minX + box.maxX) / 2
+  const cy = (box.minY + box.maxY) / 2
+  return { ...state, view: { zoom, panX: width / 2 - cx * zoom, panY: height / 2 - cy * zoom } }
+}
+
+function roomPoints(floor: Floor, roomId: string): Point[] {
+  const room = floor.rooms.find((item) => item.id === roomId)
+  return room ? ringPoints(floor, room.vertexIds) : []
+}
+
+function floorPoints(floor: Floor): Point[] {
+  return [...floor.vertices, ...floor.objects.flatMap((object) => objectProbes(object))]
+}
+
+export function fitFloor(state: EditorState, width: number, height: number): EditorState {
+  const box = boxOf(floorPoints(activeFloor(state)))
+  return box ? fitBox(state, box, width, height, 64, 2) : state
+}
+
+export function fitRoom(state: EditorState, roomId: string, width: number, height: number): EditorState {
+  const box = boxOf(roomPoints(activeFloor(state), roomId))
+  return box ? fitBox(state, box, width, height, 96, 3) : state
+}
+
+export function fitSelection(state: EditorState, width: number, height: number): EditorState {
+  const selection = state.selection
+  if (!selection) return fitFloor(state, width, height)
+  const floor = activeFloor(state)
+  let points: Point[] = []
+  if (selection.kind === 'room') points = roomPoints(floor, selection.id)
+  else if (selection.kind === 'object') {
+    const object = floor.objects.find((item) => item.id === selection.id)
+    if (object) points = objectProbes(object)
+  } else if (selection.kind === 'wall') {
+    const wall = floor.walls.find((item) => item.id === selection.id)
+    const ends = wall && wallEnds(floor, wall)
+    if (ends) points = [ends.a, ends.b]
+  }
+  const box = boxOf(points)
+  if (box) return fitBox(state, box, width, height, 96, 3)
+  const anchor = selectionAnchor(floor, selection)
+  if (!anchor) return state
+  const zoom = state.view.zoom
+  return { ...state, view: { zoom, panX: width / 2 - anchor.x * zoom, panY: height / 2 - anchor.y * zoom } }
+}
+
+/** Клик по комнате в легенде: комната вписывается в экран и становится выбранной. */
+export function showRoom(state: EditorState, roomId: string, width: number, height: number): EditorState {
+  if (!activeFloor(state).rooms.some((item) => item.id === roomId)) return state
+  return { ...fitRoom(state, roomId, width, height), selection: { kind: 'room', id: roomId }, menu: null }
+}
+
+export function zoomBy(state: EditorState, sx: number, sy: number, factor: number): EditorState {
+  const zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.view.zoom * factor))
+  const world = screenToWorld(state.view, sx, sy)
+  return { ...state, menu: null, view: { zoom, panX: sx - world.x * zoom, panY: sy - world.y * zoom } }
+}
+
+export function zoomStep(state: EditorState, dir: 1 | -1, width: number, height: number): EditorState {
+  return zoomBy(state, width / 2, height / 2, dir > 0 ? KEY_ZOOM : 1 / KEY_ZOOM)
+}
+
+export function panBy(state: EditorState, dx: number, dy: number): EditorState {
+  return { ...state, menu: null, view: { ...state.view, panX: state.view.panX + dx, panY: state.view.panY + dy } }
+}
+
+export function onDoubleClick(state: EditorState, info: { sx: number; sy: number }, editing: boolean, width: number, height: number): EditorState {
+  if (state.spaceHeld) return state
+  if (editing && state.tool === 'wall') return finishChain(state)
+  const world = screenToWorld(state.view, info.sx, info.sy)
+  const hit = hitTest(activeFloor(state), world, state.view.zoom, editing)
+  if (hit.kind === 'room') {
+    const selection: Selection = { kind: 'room', id: hit.id }
+    if (editing) return { ...state, selection, renaming: hit.id }
+    return { ...fitRoom(state, hit.id, width, height), selection }
+  }
+  if (hit.kind === 'empty') return zoomBy(state, info.sx, info.sy, 2)
+  return state
+}
+
+export function setTool(state: EditorState, tool: Tool, editing: boolean): EditorState {
+  if (!editing || state.tool === tool) return state
+  const base = abortGesture(state)
+  return { ...base, tool, selection: tool === 'wall' ? null : base.selection, menu: null, hover: null, placing: null }
+}
+
+export function setSpace(state: EditorState, held: boolean): EditorState {
+  if (state.spaceHeld === held) return state
+  return { ...state, spaceHeld: held, hover: held ? null : state.hover }
+}
+
+export function toggleHelp(state: EditorState, open?: boolean): EditorState {
+  const help = open ?? !state.help
+  return help === state.help ? state : { ...state, help, menu: null }
+}
+
+export function requestRename(state: EditorState, editing: boolean): EditorState {
+  if (!editing || state.selection?.kind !== 'room') return state
+  return { ...state, renaming: state.selection.id, menu: null }
+}
+
+export function renameHandled(state: EditorState): EditorState {
+  return state.renaming ? { ...state, renaming: null } : state
+}
+
+/** Стрелки: шаг в единицах холста. Серия нажатий без паузы — один шаг истории. */
+export function nudgeSelection(state: EditorState, editing: boolean, dx: number, dy: number): EditorState {
+  const selection = state.selection
+  if (!editing || state.textFocused || state.gesture || !selection) return state
+  const floor = activeFloor(state)
+  const delta = { x: dx, y: dy }
+  let next: Floor | null = null
+  if (selection.kind === 'object') {
+    const object = floor.objects.find((item) => item.id === selection.id)
+    if (object) next = moveObjectTo(floor, object.id, object.x + dx, object.y + dy)
+  } else if (selection.kind === 'vertex') {
+    const vertex = floor.vertices.find((item) => item.id === selection.id)
+    if (vertex) {
+      const fractions = captureFractions(floor, incidentWallIds(floor, vertex.id))
+      next = vertexMove(floor, vertex.id, add(vertex, delta), fractions)
+    }
+  } else if (selection.kind === 'wall') {
+    const wall = floor.walls.find((item) => item.id === selection.id)
+    if (wall) next = wallMove(floor, wall.id, delta, captureFractions(floor, movedWallIds(floor, new Set([wall.a, wall.b]))))
+  } else if (selection.kind === 'room') {
+    const room = floor.rooms.find((item) => item.id === selection.id)
+    if (room) {
+      const fractions = captureFractions(floor, movedWallIds(floor, new Set(room.vertexIds)))
+      next = roomMove(floor, room.vertexIds, delta, fractions)
+    }
+  } else if (selection.kind === 'opening') {
+    const opening = floor.openings.find((item) => item.id === selection.id)
+    const wall = opening && floor.walls.find((item) => item.id === opening.wallId)
+    const ends = wall && wallEnds(floor, wall)
+    if (opening && ends) {
+      const along = norm(sub(ends.b, ends.a))
+      const step = dot(delta, along)
+      if (Math.abs(step) > 1e-6) {
+        const center = add(ends.a, mul(along, opening.offset + opening.width / 2 + step))
+        next = moveOpeningTo(floor, opening.id, center)
+      }
+    }
+  }
+  if (!next || JSON.stringify(next) === JSON.stringify(floor)) return state
+  const key = selection.kind === 'chair' ? 'nudge' : `nudge:${selection.kind}:${selection.id}`
+  return finishWheel(state, paint(state, next), key, NUDGE_SERIES_MS)
+}
+
+export function rotateSelection(state: EditorState, editing: boolean, dir: 1 | -1): EditorState {
+  const selection = state.selection
+  if (selection?.kind !== 'object' || state.textFocused) return state
+  return editFloor(state, editing, (floor) => {
+    const object = floor.objects.find((item) => item.id === selection.id)
+    if (!object) return null
+    return rotateObject(floor, object.id, object.rotation + (dir * Math.PI) / 2)
+  })
+}
+
+export function duplicateSelection(state: EditorState, editing: boolean): EditorState {
+  if (state.selection?.kind !== 'object' || state.textFocused) return state
+  return { ...copyObject(state, editing, state.selection.id), menu: null }
+}
+
+export function closeMenu(state: EditorState): EditorState {
+  return state.menu ? { ...state, menu: null } : state
+}
+
+export function menuAddOpening(state: EditorState, editing: boolean, kind: 'passage' | 'window'): EditorState {
+  const menu = state.menu
+  if (!editing || menu?.hit.kind !== 'wall') return closeMenu(state)
+  const floor = activeFloor(state)
+  const before = new Set(floor.openings.map((opening) => opening.id))
+  const nextFloor = addOpeningAt(floor, menu.hit.id, kind, menu.world)
+  const created = nextFloor.openings.find((opening) => !before.has(opening.id))
+  if (!created) return closeMenu(state)
+  return remember(state, { ...paint(state, nextFloor), menu: null, selection: { kind: 'opening', id: created.id } })
+}
+
+export function menuSplitWall(state: EditorState, editing: boolean): EditorState {
+  const menu = state.menu
+  if (!editing || menu?.hit.kind !== 'wall') return closeMenu(state)
+  const split = splitWallAt(activeFloor(state), menu.hit.id, menu.world, state.selection)
+  if (!split) return closeMenu(state)
+  return remember(state, { ...paint(state, split.floor), menu: null, selection: { kind: 'vertex', id: split.vertexId } })
+}
+
+export function menuPlaceObject(state: EditorState, editing: boolean, kind: ObjectKind): EditorState {
+  const menu = state.menu
+  if (!editing || !menu) return closeMenu(state)
+  const placed = placeObject(activeFloor(state), kind, menu.world.x, menu.world.y)
+  return remember(state, { ...paint(state, placed.floor), menu: null, selection: { kind: 'object', id: placed.id } })
+}
+
+export function menuStartWall(state: EditorState, editing: boolean): EditorState {
+  const menu = state.menu
+  if (!editing || !menu) return closeMenu(state)
+  const anchor = anchorAt(activeFloor(state), ghostFloor(state), menu.world, state.view.zoom, null)
   return {
-    ...state,
-    view: {
-      zoom: state.view.zoom,
-      panX: width / 2 - point.x * state.view.zoom,
-      panY: height / 2 - point.y * state.view.zoom,
-    },
+    ...abortGesture(state),
+    tool: 'wall',
+    menu: null,
+    selection: null,
+    chain: [anchor.point],
+    axisLock: anchor.lockWallId,
   }
 }
 
+export function menuRaiseGhost(state: EditorState, editing: boolean): EditorState {
+  const menu = state.menu
+  const ghost = ghostFloor(state)
+  if (!editing || !menu?.ghostWallId || !ghost) return closeMenu(state)
+  const raised = raiseGhostWalls(activeFloor(state), ghost, menu.ghostWallId, state.selection)
+  if (raised.created.length === 0) return closeMenu(state)
+  return remember(state, {
+    ...paint(state, raised.floor),
+    menu: null,
+    chain: null,
+    axisLock: null,
+    selection: { kind: 'wall', id: raised.created[0] },
+  })
+}
+
+export function canSplitAt(floor: Floor, wallId: string, point: Point): boolean {
+  return splitWallAt(floor, wallId, point, null) !== null
+}
 export function selectChair(state: EditorState, objectId: string, chairId: string): EditorState {
   return { ...state, selection: { kind: 'chair', objectId, chairId } }
 }

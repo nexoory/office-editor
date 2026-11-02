@@ -21,6 +21,12 @@ export const HISTORY_LIMIT = 200
 export const MIN_ZOOM = 0.05
 export const MAX_ZOOM = 12
 export const ZOOM_FACTOR = 1.08
+/** Шаг масштаба кнопками и клавишами + и −. */
+export const KEY_ZOOM = 1.25
+/** Пауза, после которой следующий сдвиг стрелкой — новый шаг истории. */
+export const NUDGE_SERIES_MS = 800
+/** Сдвиг холста стрелками без выбора, в пикселях экрана. */
+export const KEY_PAN_PX = 80
 export const ALIGN_DEG = 2
 /** Нижняя граница длины, ширины и шага: один сантиметр, одна единица холста. */
 export const MIN_OBJECT_SPAN = 1

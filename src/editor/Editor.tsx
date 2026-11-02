@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { KEY_PAN_PX } from '../constants'
 import { Canvas } from './Canvas'
+import { ContextMenu, type ContextMenuActions } from './ContextMenu'
 import { FloorSwitcher } from './FloorSwitcher'
+import { HintBar } from './HintBar'
+import { Inspector, type InspectorActions } from './Inspector'
 import { Legend } from './Legend'
-import { ObjectHud } from './ObjectHud'
 import { PlacePalette } from './PlacePalette'
+import { ShortcutsHelp } from './ShortcutsHelp'
+import { Toolbar } from './Toolbar'
+import { ViewControls } from './ViewControls'
 import {
   activeFloor,
   addFloor,
   beginPlace,
-  centerOnRoom,
+  cancelPlace,
+  cancelPointer,
   changeAddChair,
   changeDoorAccess,
   changeDoorHinge,
@@ -23,35 +30,69 @@ import {
   changeObjectUntag,
   changeObjectWidth,
   changeOpeningKind,
-  changeWallPartition,
+  changeOpeningWidth,
   changeRoomIcon,
-  copyObject,
+  changeWallPartition,
+  changeWallThickness,
+  closeMenu,
   createEditorState,
   createOpening,
   deleteSelection,
-  cancelPlace,
+  duplicateSelection,
   endPlace,
   escape,
+  finishChain,
+  fitFloor,
+  fitSelection,
+  ghostFloor,
+  menuAddOpening,
+  menuPlaceObject,
+  menuRaiseGhost,
+  menuSplitWall,
+  menuStartWall,
   movePlace,
+  nudgeSelection,
+  onDoubleClick,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onWheel,
-  startObjectHandle,
+  panBy,
+  pinchView,
+  pointerLeave,
+  raiseAll,
   redo,
+  renameHandled,
+  requestRename,
+  rotateSelection,
   selectChair,
   setBrowsing,
   setLegendFilter,
+  setModifiers,
   setRoomColor,
   setRoomName,
+  setSpace,
+  setTool,
+  showRoom,
   switchFloor,
+  toggleHelp,
   togglePalette,
   undo,
+  wheelOpeningWidth,
+  wheelWallThickness,
+  zoomStep,
   type EditorState,
   type PointerInfo,
 } from './reduce'
-import { SelectionHud } from './SelectionHud'
 import { loadMap, saveMap } from '../storage'
+import type { Selection } from '../types'
+
+type Update = (state: EditorState) => EditorState
+
+function isMoving(state: EditorState): boolean {
+  const type = state.gesture?.type
+  return !!type && type !== 'pending' && type !== 'pan'
+}
 
 export function Editor({ editing }: { editing: boolean }) {
   const [state, setState] = useState<EditorState>(() => createEditorState(loadMap()))
@@ -61,6 +102,11 @@ export function Editor({ editing }: { editing: boolean }) {
   const canEdit = editing && !state.browsing
   editingRef.current = canEdit
   stateRef.current = state
+
+  const stageSize = useCallback(() => {
+    const rect = stageRef.current?.getBoundingClientRect()
+    return { width: rect?.width ?? 1, height: rect?.height ?? 1 }
+  }, [])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -80,54 +126,162 @@ export function Editor({ editing }: { editing: boolean }) {
   }, [])
 
   useEffect(() => {
+    const apply = (update: Update) => setState(update)
+    const typingIn = (target: EventTarget | null) =>
+      target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+    const onModifier = (event: KeyboardEvent) => {
+      if (event.key === 'Alt') event.preventDefault()
+      apply((current) => setModifiers(current, event.shiftKey, event.altKey, editingRef.current))
+    }
     const onKey = (event: KeyboardEvent) => {
-      const target = event.target
-      const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
-      if (typing) return
-      const key = event.key
-      const mod = event.ctrlKey || event.metaKey
-      if (mod && key.toLowerCase() === 'z') {
-        event.preventDefault()
-        setState((current) => (event.shiftKey ? redo(current, editingRef.current) : undo(current, editingRef.current)))
+      if (event.key === 'Shift' || event.key === 'Alt') {
+        onModifier(event)
         return
       }
-      if (key === 'Escape') {
+      if (typingIn(event.target)) return
+      const edit = editingRef.current
+      const code = event.code
+      const mod = event.ctrlKey || event.metaKey
+      const { width, height } = stageSize()
+      const handled = (update: Update) => {
         event.preventDefault()
-        setState((current) => escape(current))
-      } else if (key === 'Delete' || key === 'Backspace') {
+        apply(update)
+      }
+      if (mod) {
+        if (code === 'KeyZ') handled((current) => (event.shiftKey ? redo(current, editingRef.current) : undo(current, editingRef.current)))
+        else if (code === 'KeyY') handled((current) => redo(current, editingRef.current))
+        else if (code === 'KeyD') handled((current) => duplicateSelection(current, editingRef.current))
+        return
+      }
+      if (event.altKey) return
+      if (code === 'Space') {
         event.preventDefault()
-        setState((current) => deleteSelection(current, editingRef.current))
-      } else if (key === 'PageUp') {
-        event.preventDefault()
-        setState((current) => switchFloor(current, 1))
-      } else if (key === 'PageDown') {
-        event.preventDefault()
-        setState((current) => switchFloor(current, -1))
+        if (!event.repeat) apply((current) => setSpace(current, true))
+        return
+      }
+      if (event.key === 'Escape') return handled(escape)
+      if (event.key === 'Delete' || event.key === 'Backspace') return handled((current) => deleteSelection(current, editingRef.current))
+      if (event.key === 'PageUp') return handled((current) => switchFloor(current, 1))
+      if (event.key === 'PageDown') return handled((current) => switchFloor(current, -1))
+      if (event.key === '?' || (event.shiftKey && code === 'Slash')) return handled((current) => toggleHelp(current))
+      if (event.shiftKey && code === 'Digit1') return handled((current) => fitFloor(current, width, height))
+      if (event.shiftKey && code === 'Digit2') return handled((current) => fitSelection(current, width, height))
+      if (code === 'Equal' || code === 'NumpadAdd') return handled((current) => zoomStep(current, 1, width, height))
+      if (code === 'Minus' || code === 'NumpadSubtract') return handled((current) => zoomStep(current, -1, width, height))
+      if (event.key.startsWith('Arrow')) {
+        const dx = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0
+        const dy = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0
+        const current = stateRef.current
+        if (edit && current.selection && current.selection.kind !== 'chair') {
+          const step = event.shiftKey ? 10 : 1
+          return handled((value) => nudgeSelection(value, editingRef.current, dx * step, dy * step))
+        }
+        return handled((value) => panBy(value, -dx * KEY_PAN_PX, -dy * KEY_PAN_PX))
+      }
+      if (event.key === 'Enter') {
+        const current = stateRef.current
+        if (current.chain || current.gesture?.type === 'draw') return handled(finishChain)
+        if (current.selection?.kind === 'room') return handled((value) => requestRename(value, editingRef.current))
+        return
+      }
+      if (!edit) return
+      if (code === 'KeyV') return handled((current) => setTool(current, 'select', editingRef.current))
+      if (code === 'KeyW') return handled((current) => setTool(current, 'wall', editingRef.current))
+      if (code === 'KeyR') return handled((current) => rotateSelection(current, editingRef.current, event.shiftKey ? -1 : 1))
+    }
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Shift' || event.key === 'Alt') onModifier(event)
+      if (event.code === 'Space') {
+        if (!typingIn(event.target)) event.preventDefault()
+        apply((current) => setSpace(current, false))
       }
     }
+    const onBlur = () => apply((current) => setModifiers(setSpace(current, false), false, false, editingRef.current))
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [stageSize])
+
+  const update = useCallback((change: (current: EditorState, edit: boolean) => EditorState) => {
+    setState((current) => change(current, editingRef.current))
   }, [])
 
-  const pointerDown = useCallback((info: PointerInfo) => {
-    setState((current) => onPointerDown(current, info, editingRef.current))
-  }, [])
-  const pointerMove = useCallback((info: PointerInfo) => {
-    setState((current) => onPointerMove(current, info, editingRef.current))
-  }, [])
-  const pointerUp = useCallback((info: PointerInfo) => {
-    setState((current) => onPointerUp(current, info, editingRef.current))
-  }, [])
-  const wheel = useCallback((info: { sx: number; sy: number; deltaY: number; deltaMode: number; ctrl: boolean }) => {
-    setState((current) => onWheel(current, info, editingRef.current))
-  }, [])
+  const pointerDown = useCallback((info: PointerInfo) => update((current, edit) => onPointerDown(current, info, edit)), [update])
+  const pointerMove = useCallback((info: PointerInfo) => update((current, edit) => onPointerMove(current, info, edit)), [update])
+  const pointerUp = useCallback((info: PointerInfo) => update((current, edit) => onPointerUp(current, info, edit)), [update])
+  const wheel = useCallback((info: { sx: number; sy: number; deltaY: number }) => update((current) => onWheel(current, info)), [update])
 
   const floor = activeFloor(state)
   const focus = (focused: boolean) => setState((current) => ({ ...current, textFocused: focused }))
-  const stageSize = () => {
-    const rect = stageRef.current?.getBoundingClientRect()
-    return { width: rect?.width ?? 1, height: rect?.height ?? 1 }
+  const onSelected = <K extends Selection['kind']>(
+    kind: K,
+    change: (current: EditorState, edit: boolean, selection: Extract<Selection, { kind: K }>) => EditorState,
+  ) =>
+    update((current, edit) =>
+      current.selection?.kind === kind ? change(current, edit, current.selection as Extract<Selection, { kind: K }>) : current,
+    )
+
+  const inspectorActions: InspectorActions = {
+    onTextFocus: focus,
+    onDelete: () => update(deleteSelection),
+    onCopy: () => update(duplicateSelection),
+    onRotate: () => update((current, edit) => rotateSelection(current, edit, 1)),
+    onThickness: (value) => onSelected('wall', (current, edit, selection) => changeWallThickness(current, edit, selection.id, value)),
+    onThicknessWheel: (deltaY) =>
+      onSelected('wall', (current, edit, selection) => wheelWallThickness(current, edit, selection.id, deltaY)),
+    onPartition: (partition) =>
+      onSelected('wall', (current, edit, selection) => changeWallPartition(current, edit, selection.id, partition)),
+    onOpening: (kind) => update((current, edit) => createOpening(current, edit, kind)),
+    onOpeningWidth: (value) =>
+      onSelected('opening', (current, edit, selection) => changeOpeningWidth(current, edit, selection.id, value)),
+    onOpeningWheel: (deltaY, deltaMode) =>
+      onSelected('opening', (current, edit, selection) => wheelOpeningWidth(current, edit, selection.id, deltaY, deltaMode)),
+    onOpeningKind: (kind) => onSelected('opening', (current, edit, selection) => changeOpeningKind(current, edit, selection.id, kind)),
+    onHinge: (hinge) => onSelected('opening', (current, edit, selection) => changeDoorHinge(current, edit, selection.id, hinge)),
+    onSide: (side) => onSelected('opening', (current, edit, selection) => changeDoorSide(current, edit, selection.id, side)),
+    onAccess: (access) => onSelected('opening', (current, edit, selection) => changeDoorAccess(current, edit, selection.id, access)),
+    onRename: (name) => onSelected('room', (current, edit, selection) => setRoomName(current, edit, selection.id, name)),
+    onRoomColor: (color) => onSelected('room', (current, edit, selection) => setRoomColor(current, edit, selection.id, color)),
+    onRoomIcon: (icon) => onSelected('room', (current, edit, selection) => changeRoomIcon(current, edit, selection.id, icon)),
+    onNote: (id, note) => update((current, edit) => changeObjectNote(current, edit, id, note)),
+    onAddTag: (id, tag) => update((current, edit) => changeObjectTag(current, edit, id, tag)),
+    onRemoveTag: (id, tag) => update((current, edit) => changeObjectUntag(current, edit, id, tag)),
+    onColor: (id, color) => update((current, edit) => changeObjectColor(current, edit, id, color)),
+    onSymbol: (id, symbol) => update((current, edit) => changeObjectSymbol(current, edit, id, symbol)),
+    onLength: (id, length) => update((current, edit) => changeObjectLength(current, edit, id, length)),
+    onWidth: (id, width) => update((current, edit) => changeObjectWidth(current, edit, id, width)),
+    onStep: (id, step) => update((current, edit) => changeObjectStep(current, edit, id, step)),
+    onDirection: (id, direction) => update((current, edit) => changeObjectDirection(current, edit, id, direction)),
+    onAddChair: (id) => update((current, edit) => changeAddChair(current, edit, id)),
+    onSelectChair: (objectId, chairId) => update((current) => selectChair(current, objectId, chairId)),
+    onRenameHandled: () => setState(renameHandled),
   }
+
+  const menuActions: ContextMenuActions = {
+    onAddObject: (kind) => update((current, edit) => menuPlaceObject(current, edit, kind)),
+    onStartWall: () => update(menuStartWall),
+    onRaiseAll: () => update(raiseAll),
+    onRaiseGhost: () => update(menuRaiseGhost),
+    onRename: () => update(requestRename),
+    onDelete: () => update((current, edit) => closeMenu(deleteSelection(current, edit))),
+    onAddOpening: (kind) => update((current, edit) => menuAddOpening(current, edit, kind)),
+    onSplit: () => update(menuSplitWall),
+    onPartition: (partition) =>
+      onSelected('wall', (current, edit, selection) => closeMenu(changeWallPartition(current, edit, selection.id, partition))),
+    onOpeningKind: (kind) =>
+      onSelected('opening', (current, edit, selection) => closeMenu(changeOpeningKind(current, edit, selection.id, kind))),
+    onCopy: () => update(duplicateSelection),
+    onRotate: () => update((current, edit) => closeMenu(rotateSelection(current, edit, 1))),
+    onClose: () => update(closeMenu),
+  }
+
+  const showInspector = !!state.selection && !state.menu && !isMoving(state) && !(canEdit && state.tool === 'wall')
+
   return (
     <div className="editor">
       <div className="stage" ref={stageRef}>
@@ -137,6 +291,13 @@ export function Editor({ editing }: { editing: boolean }) {
           onPointerDown={pointerDown}
           onPointerMove={pointerMove}
           onPointerUp={pointerUp}
+          onPointerCancel={() => update(cancelPointer)}
+          onPointerLeave={() => update(pointerLeave)}
+          onDoubleClick={(info) => {
+            const size = stageSize()
+            update((current, edit) => onDoubleClick(current, info, edit, size.width, size.height))
+          }}
+          onPinch={(info) => update((current) => pinchView(current, info))}
           onWheel={wheel}
         />
         <FloorSwitcher
@@ -147,110 +308,47 @@ export function Editor({ editing }: { editing: boolean }) {
           browsing={state.browsing}
           onBrowse={(browsing) => setState((current) => setBrowsing(current, browsing))}
           onSwitch={(delta) => setState((current) => switchFloor(current, delta))}
-          onAdd={(delta) => setState((current) => addFloor(current, editingRef.current, delta))}
+          onAdd={(delta) => update((current, edit) => addFloor(current, edit, delta))}
         />
-        {state.selection && state.selection.kind !== 'object' && state.selection.kind !== 'chair' && (
-          <SelectionHud
+        {showInspector && state.selection && (
+          <Inspector
             floor={floor}
             selection={state.selection}
             view={state.view}
             editing={canEdit}
-            onDelete={() => setState((current) => deleteSelection(current, editingRef.current))}
-            onOpening={(kind) => setState((current) => createOpening(current, editingRef.current, kind))}
-            onPartition={(partition) =>
-              setState((current) =>
-                current.selection?.kind === 'wall'
-                  ? changeWallPartition(current, editingRef.current, current.selection.id, partition)
-                  : current,
-              )
-            }
-            onRename={(name) =>
-              setState((current) =>
-                current.selection?.kind === 'room' ? setRoomName(current, editingRef.current, current.selection.id, name) : current,
-              )
-            }
-            onColor={(color) =>
-              setState((current) =>
-                current.selection?.kind === 'room' ? setRoomColor(current, editingRef.current, current.selection.id, color) : current,
-              )
-            }
-            onTextFocus={focus}
-            onIcon={(icon) =>
-              setState((current) =>
-                current.selection?.kind === 'room' ? changeRoomIcon(current, editingRef.current, current.selection.id, icon) : current,
-              )
-            }
-            onOpeningKind={(kind) =>
-              setState((current) =>
-                current.selection?.kind === 'opening'
-                  ? changeOpeningKind(current, editingRef.current, current.selection.id, kind)
-                  : current,
-              )
-            }
-            onHinge={(hinge) =>
-              setState((current) =>
-                current.selection?.kind === 'opening'
-                  ? changeDoorHinge(current, editingRef.current, current.selection.id, hinge)
-                  : current,
-              )
-            }
-            onSide={(side) =>
-              setState((current) =>
-                current.selection?.kind === 'opening'
-                  ? changeDoorSide(current, editingRef.current, current.selection.id, side)
-                  : current,
-              )
-            }
-            onAccess={(access) =>
-              setState((current) =>
-                current.selection?.kind === 'opening'
-                  ? changeDoorAccess(current, editingRef.current, current.selection.id, access)
-                  : current,
-              )
-            }
+            renaming={state.renaming}
+            actions={inspectorActions}
           />
         )}
-        {state.selection && (state.selection.kind === 'object' || state.selection.kind === 'chair') && (
-          <ObjectHud
-            floor={floor}
-            selection={state.selection}
-            view={state.view}
-            editing={canEdit}
-            onTextFocus={focus}
-            onNote={(id, note) => setState((current) => changeObjectNote(current, editingRef.current, id, note))}
-            onAddTag={(id, tag) => setState((current) => changeObjectTag(current, editingRef.current, id, tag))}
-            onRemoveTag={(id, tag) => setState((current) => changeObjectUntag(current, editingRef.current, id, tag))}
-            onColor={(id, color) => setState((current) => changeObjectColor(current, editingRef.current, id, color))}
-            onSymbol={(id, symbol) => setState((current) => changeObjectSymbol(current, editingRef.current, id, symbol))}
-            onLength={(id, length) => setState((current) => changeObjectLength(current, editingRef.current, id, length))}
-            onWidth={(id, width) => setState((current) => changeObjectWidth(current, editingRef.current, id, width))}
-            onStep={(id, step) => setState((current) => changeObjectStep(current, editingRef.current, id, step))}
-            onDirection={(id, direction) =>
-              setState((current) => changeObjectDirection(current, editingRef.current, id, direction))
-            }
-            onAddChair={(id) => setState((current) => changeAddChair(current, editingRef.current, id))}
-            onSelectChair={(objectId, chairId) => setState((current) => selectChair(current, objectId, chairId))}
-            onCopy={(id) => setState((current) => copyObject(current, editingRef.current, id))}
-            onDelete={() => setState((current) => deleteSelection(current, editingRef.current))}
-            stageRef={stageRef}
-            onHandleDown={(kind, info) => setState((current) => startObjectHandle(current, kind, info, editingRef.current))}
-            onHandleMove={(info) => setState((current) => onPointerMove(current, info, editingRef.current))}
-            onHandleUp={(info) => setState((current) => onPointerUp(current, info, editingRef.current))}
-          />
+        {state.menu && canEdit && (
+          <ContextMenu menu={state.menu} floor={floor} hasGhost={!!ghostFloor(state)} actions={menuActions} />
         )}
         {canEdit && (
-          <PlacePalette
-            open={state.paletteOpen}
-            stageRef={stageRef}
-            onToggle={() => setState((current) => togglePalette(current))}
-            onBegin={(kind, sx, sy) => setState((current) => beginPlace(current, kind, sx, sy))}
-            onMove={(sx, sy) => setState((current) => movePlace(current, sx, sy))}
-            onEnd={(overCanvas, width, height) =>
-              setState((current) => endPlace(current, editingRef.current, overCanvas, width, height))
-            }
-            onCancel={() => setState((current) => cancelPlace(current))}
-          />
+          <Toolbar tool={state.tool} onTool={(tool) => update((current, edit) => setTool(current, tool, edit))}>
+            <PlacePalette
+              open={state.paletteOpen}
+              stageRef={stageRef}
+              onToggle={() => setState((current) => togglePalette(current))}
+              onBegin={(kind, sx, sy) => setState((current) => beginPlace(current, kind, sx, sy))}
+              onMove={(sx, sy, alt) => setState((current) => movePlace(current, sx, sy, alt))}
+              onEnd={(overCanvas, width, height) => update((current, edit) => endPlace(current, edit, overCanvas, width, height))}
+              onCancel={() => setState((current) => cancelPlace(current))}
+            />
+          </Toolbar>
         )}
+        {canEdit && <HintBar state={state} editing={canEdit} />}
+        <ViewControls
+          zoom={state.view.zoom}
+          onZoom={(dir) => {
+            const size = stageSize()
+            setState((current) => zoomStep(current, dir, size.width, size.height))
+          }}
+          onFit={() => {
+            const size = stageSize()
+            setState((current) => fitFloor(current, size.width, size.height))
+          }}
+          onHelp={() => setState((current) => toggleHelp(current))}
+        />
         <Legend
           floor={floor}
           filter={state.legendFilter}
@@ -258,9 +356,10 @@ export function Editor({ editing }: { editing: boolean }) {
           onFilter={(kind) => setState((current) => setLegendFilter(current, kind))}
           onRoom={(roomId) => {
             const size = stageSize()
-            setState((current) => centerOnRoom(current, roomId, size.width, size.height))
+            setState((current) => showRoom(current, roomId, size.width, size.height))
           }}
         />
+        {state.help && <ShortcutsHelp editing={canEdit} onClose={() => setState((current) => toggleHelp(current, false))} />}
       </div>
     </div>
   )

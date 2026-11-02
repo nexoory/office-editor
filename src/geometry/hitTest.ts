@@ -13,7 +13,6 @@ export type Hit =
   | { kind: 'chair'; objectId: string; chairId: string }
   | { kind: 'object'; id: string }
   | { kind: 'room'; id: string }
-  | { kind: 'ghost-wall'; id: string }
   | { kind: 'empty' }
 
 const VERTEX_PX = 8
@@ -28,14 +27,7 @@ function openingAt(floor: Floor, wallId: string, offset: number, slack = 0): boo
   )
 }
 
-export function hitTest(
-  floor: Floor,
-  ghost: Floor | null,
-  point: Point,
-  zoom: number,
-  editing: boolean,
-  button: 'left' | 'right',
-): Hit {
+export function hitTest(floor: Floor, point: Point, zoom: number, editing: boolean): Hit {
   const vertexR = VERTEX_PX / zoom
   const slop = WALL_PX / zoom
 
@@ -107,29 +99,31 @@ export function hitTest(
   }
   if (bestRoom) return { kind: 'room', id: bestRoom.id }
 
-  if (button === 'right' && editing && ghost) {
-    let bestGhost: { id: string; score: number } | null = null
-    for (const wall of ghost.walls) {
-      const ends = wallEnds(ghost, wall)
-      if (!ends) continue
-      if (wall.thickness <= 0 && !editing) continue
-      const proj = projectSegment(point, ends.a, ends.b)
-      const reach = wall.thickness > 0 ? wall.thickness / 2 + slop : slop
-      if (proj.distance > reach) continue
-      const covered = floor.walls.some((current) => {
-        if (current.thickness <= 0) return false
-        const currentEnds = wallEnds(floor, current)
-        if (!currentEnds) return false
-        const on = projectSegment(point, currentEnds.a, currentEnds.b)
-        return on.distance <= current.thickness / 2
-      })
-      if (covered) continue
-      if (!bestGhost || proj.distance < bestGhost.score) bestGhost = { id: wall.id, score: proj.distance }
-    }
-    if (bestGhost) return { kind: 'ghost-wall', id: bestGhost.id }
-  }
-
   return { kind: 'empty' }
+}
+
+/** Призрачная стена под курсором, если её не закрывает стена текущего этажа. */
+export function hitGhostWall(floor: Floor, ghost: Floor | null, point: Point, zoom: number): string | null {
+  if (!ghost) return null
+  const slop = WALL_PX / zoom
+  let bestGhost: { id: string; score: number } | null = null
+  for (const wall of ghost.walls) {
+    const ends = wallEnds(ghost, wall)
+    if (!ends) continue
+    const proj = projectSegment(point, ends.a, ends.b)
+    const reach = wall.thickness > 0 ? wall.thickness / 2 + slop : slop
+    if (proj.distance > reach) continue
+    const covered = floor.walls.some((current) => {
+      if (current.thickness <= 0) return false
+      const currentEnds = wallEnds(floor, current)
+      if (!currentEnds) return false
+      const on = projectSegment(point, currentEnds.a, currentEnds.b)
+      return on.distance <= current.thickness / 2
+    })
+    if (covered) continue
+    if (!bestGhost || proj.distance < bestGhost.score) bestGhost = { id: wall.id, score: proj.distance }
+  }
+  return bestGhost?.id ?? null
 }
 
 function hitFurniture(floor: Floor, point: Point, editing: boolean): Hit | null {
@@ -219,7 +213,7 @@ function interiorPointSafe(points: Point[]): Point {
 
 export function hitMatchesSelection(hit: Hit, selection: Selection | null): boolean {
   if (!selection) return false
-  if (hit.kind === 'empty' || hit.kind === 'ghost-wall') return false
+  if (hit.kind === 'empty') return false
   if (hit.kind === 'chair' && selection.kind === 'chair') {
     return hit.objectId === selection.objectId && hit.chairId === selection.chairId
   }

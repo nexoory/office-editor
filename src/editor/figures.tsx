@@ -6,7 +6,8 @@ import { chairsOf, OBJECTS, objectFill, stairDirectionOf, stairStepOf } from '..
 import { chairPose, worldToLocal } from '../objects/placement'
 import { ChairGraphic, SignGraphic } from '../objects/signs'
 import { theme } from '../theme'
-import type { Floor, ObjectKind, Selection } from '../types'
+import type { Floor, ObjectKind, PlanObject, Selection } from '../types'
+import { HANDLE_R_PX, handlePoints, type ObjectHandle } from '../objects/handles'
 
 const outline = {
   fill: 'none' as const,
@@ -55,6 +56,45 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null;
           })}
         </g>
       ))}
+    </g>
+  )
+}
+
+export function ObjectHandles(props: { object: PlanObject; zoom: number; active: ObjectHandle | null }) {
+  const { object, zoom } = props
+  const points = handlePoints(object, zoom)
+  const r = HANDLE_R_PX / zoom
+  const grow = (handle: ObjectHandle) => (props.active === handle ? 1.3 : 1)
+  const degrees = (object.rotation * 180) / Math.PI
+  const side = r * 1.7 * grow('resize')
+  return (
+    <g pointerEvents="none">
+      <line
+        x1={points.stem.x}
+        y1={points.stem.y}
+        x2={points.rotate.x}
+        y2={points.rotate.y}
+        stroke={theme.selected}
+        strokeWidth={1.5 / zoom}
+      />
+      <circle
+        cx={points.rotate.x}
+        cy={points.rotate.y}
+        r={r * grow('rotate')}
+        fill="#fff"
+        stroke={theme.selected}
+        strokeWidth={2 / zoom}
+      />
+      <rect
+        x={points.resize.x - side / 2}
+        y={points.resize.y - side / 2}
+        width={side}
+        height={side}
+        transform={`rotate(${degrees} ${points.resize.x} ${points.resize.y})`}
+        fill="#fff"
+        stroke={theme.selected}
+        strokeWidth={2 / zoom}
+      />
     </g>
   )
 }

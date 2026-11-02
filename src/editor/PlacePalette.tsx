@@ -1,8 +1,8 @@
 import { useRef, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { faPlus } from '@fortawesome/free-solid-svg-icons'
 import { OBJECT_ORDER, objectName } from '../objects/catalog'
-import { FaIcon } from '../objects/faIcon'
 import { TypeMark } from '../objects/signs'
+import { Glyph } from './Glyph'
 import type { ObjectKind } from '../types'
 
 export function PlacePalette(props: {
@@ -10,7 +10,7 @@ export function PlacePalette(props: {
   stageRef: RefObject<HTMLDivElement | null>
   onToggle: () => void
   onBegin: (kind: ObjectKind, sx: number, sy: number) => void
-  onMove: (sx: number, sy: number) => void
+  onMove: (sx: number, sy: number, alt: boolean) => void
   onEnd: (overCanvas: boolean, width: number, height: number) => void
   onCancel: () => void
 }) {
@@ -37,14 +37,13 @@ export function PlacePalette(props: {
       <button
         ref={addRef}
         type="button"
-        className="place-add"
+        className="tool-button place-add"
         aria-label="Добавить предмет"
+        title="Добавить предмет"
         aria-expanded={props.open}
         onClick={props.onToggle}
       >
-        <svg width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true">
-          <FaIcon icon={faPlus} size={16} color="currentColor" />
-        </svg>
+        <Glyph icon={faPlus} />
       </button>
       {props.open && (
         <div ref={menuRef} className="place-menu" role="listbox" aria-label="Типы предметов">
@@ -69,7 +68,7 @@ export function PlacePalette(props: {
                 onPointerMove={(event) => {
                   if (activePointer.current !== event.pointerId) return
                   const point = locate(event)
-                  props.onMove(point.sx, point.sy)
+                  props.onMove(point.sx, point.sy, event.altKey)
                 }}
                 onPointerUp={(event) => {
                   if (activePointer.current !== event.pointerId) return

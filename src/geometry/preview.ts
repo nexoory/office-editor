@@ -85,7 +85,10 @@ export function computePreview(options: {
   zoom: number
   lockWallId: string | null
   chain: SegmentEnd[] | null
+  /** Alt: без направляющих и без призрака, остаются точки и тело стен этажа. */
+  free?: boolean
 }): { preview: Preview; lockWallId: string | null } {
+  const free = !!options.free
   const anchor = { x: options.anchor.x, y: options.anchor.y }
   const base = options.shift ? constrainAngle(anchor, options.cursor) : options.cursor
   const ray = options.shift
@@ -100,13 +103,15 @@ export function computePreview(options: {
     floor: options.floor,
     ghost: options.ghost,
     zoom: options.zoom,
-    allowGhost: true,
-    lockWallId: options.lockWallId,
+    allowGhost: !free,
+    lockWallId: free ? null : options.lockWallId,
     excludeVertexIds: exclude,
     ray,
   })
   const extra = [anchor, ...(options.chain ?? []).map((point) => ({ x: point.x, y: point.y }))]
-  let end = alignSegmentEnd(options.floor, segmentFromSnap(snapped.snap), anchor, options.zoom, snapped.snap, ray, exclude, extra)
+  let end = free
+    ? segmentFromSnap(snapped.snap)
+    : alignSegmentEnd(options.floor, segmentFromSnap(snapped.snap), anchor, options.zoom, snapped.snap, ray, exclude, extra)
   end = clampToWalls(options.floor, anchor, end)
   const closing = !!(
     chain &&
@@ -145,6 +150,7 @@ export function anchorAt(
   cursor: Point,
   zoom: number,
   lockWallId: string | null,
+  free = false,
 ): { point: SegmentEnd; lockWallId: string | null } {
   const snapped = snapPoint({
     cursor,
@@ -152,10 +158,12 @@ export function anchorAt(
     floor,
     ghost,
     zoom,
-    allowGhost: true,
-    lockWallId,
+    allowGhost: !free,
+    lockWallId: free ? null : lockWallId,
   })
-  const end = alignSegmentEnd(floor, segmentFromSnap(snapped.snap), cursor, zoom, snapped.snap, null)
+  const end = free
+    ? segmentFromSnap(snapped.snap)
+    : alignSegmentEnd(floor, segmentFromSnap(snapped.snap), cursor, zoom, snapped.snap, null)
   return { point: end, lockWallId: snapped.lockWallId }
 }
 
