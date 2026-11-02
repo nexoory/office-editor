@@ -10,6 +10,13 @@ export const GHOST_BREAK_PX = 28
 export const DRAG_THRESHOLD_PX = 5
 export const DEFAULT_OPENING_WIDTH = 36
 export const WHEEL_MS = 400
+/** Пауза, после которой ряд ширины проёма снова начинается с сантиметра. */
+export const OPENING_SERIES_MS = 500
+/** События тачпада ближе этого интервала — один жест, а не пачка шагов. */
+export const WHEEL_BURST_MS = 40
+export const OPENING_STEP_MAX = 32
+/** Сдвиг копии предмета: 20 см, 20 единиц холста. */
+export const COPY_OFFSET = 20
 export const HISTORY_LIMIT = 200
 export const MIN_ZOOM = 0.05
 export const MAX_ZOOM = 12

@@ -1,6 +1,6 @@
 export type Vertex = { id: string; x: number; y: number }
 
-export type Wall = { id: string; a: string; b: string; thickness: number }
+export type Wall = { id: string; a: string; b: string; thickness: number; partition?: boolean }
 
 export type OpeningKind = 'passage' | 'window' | 'door'
 
@@ -21,14 +21,13 @@ export type Opening = {
   access?: Access
 }
 
-export type RoomIcon = 'meeting' | 'wc' | 'gym' | 'lounge' | 'dining' | 'cloakroom' | 'custom'
-
 export type Room = {
   id: string
   vertexIds: string[]
   name: string
   color: string | null
-  icon: RoomIcon | null
+  /** Имя знака Font Awesome или отсутствие иконки. Старые типы читает roomIconName. */
+  icon: string | null
   symbol?: string
 }
 
@@ -37,6 +36,7 @@ export type ObjectKind =
   | 'table'
   | 'cooler'
   | 'microwave'
+  | 'printer'
   | 'wardrobe'
   | 'toilet'
   | 'sink'

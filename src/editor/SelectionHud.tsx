@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatSize } from '../geometry/formatLength'
+import { ringPoints } from '../geometry/faces'
 import { selectionAnchor } from '../geometry/hitTest'
-import { IconPicker } from './IconPicker'
-import { ROOM_TYPES } from '../objects/icons'
+import { roomIconName } from '../objects/icons'
 import { theme } from '../theme'
-import type { Access, DoorSide, Floor, Hinge, RoomIcon, Selection, View } from '../types'
+import type { Access, DoorSide, Floor, Hinge, Selection, View } from '../types'
+import { IconPicker } from './IconPicker'
 
 export function SelectionHud(props: {
   floor: Floor
@@ -13,24 +14,24 @@ export function SelectionHud(props: {
   editing: boolean
   onDelete: () => void
   onOpening: (kind: 'passage' | 'window') => void
+  onPartition: (partition: boolean) => void
   onRename: (name: string) => void
-  onColor: (color: string) => void
+  onColor: (color: string | null) => void
   onTextFocus: (focused: boolean) => void
-  onIcon: (icon: RoomIcon | null) => void
-  onSymbol: (symbol: string) => void
+  onIcon: (icon: string | null) => void
   onOpeningKind: (kind: 'passage' | 'door') => void
   onHinge: (hinge: Hinge) => void
   onSide: (side: DoorSide) => void
   onAccess: (access: Access) => void
 }) {
-  const anchor = selectionAnchor(props.floor, props.selection)
+  const anchor = hudAnchor(props.floor, props.selection)
   if (!anchor || !props.editing) return null
   const left = anchor.x * props.view.zoom + props.view.panX
   const top = anchor.y * props.view.zoom + props.view.panY
   return (
     <div className="hud" style={{ left, top, transform: 'translate(-50%, 12px)' }}>
       {props.selection.kind === 'wall' && (
-        <WallHud floor={props.floor} id={props.selection.id} onOpening={props.onOpening} />
+        <WallHud floor={props.floor} id={props.selection.id} onOpening={props.onOpening} onPartition={props.onPartition} />
       )}
       {props.selection.kind === 'opening' && (
         <OpeningHud
@@ -50,7 +51,6 @@ export function SelectionHud(props: {
           onColor={props.onColor}
           onTextFocus={props.onTextFocus}
           onIcon={props.onIcon}
-          onSymbol={props.onSymbol}
         />
       )}
       <button type="button" className="icon-button" aria-label="Удалить" onClick={props.onDelete}>
@@ -60,12 +60,21 @@ export function SelectionHud(props: {
   )
 }
 
-function WallHud(props: { floor: Floor; id: string; onOpening: (kind: 'passage' | 'window') => void }) {
+function WallHud(props: {
+  floor: Floor
+  id: string
+  onOpening: (kind: 'passage' | 'window') => void
+  onPartition: (partition: boolean) => void
+}) {
   const wall = props.floor.walls.find((item) => item.id === props.id)
   if (!wall) return null
   return (
     <>
       <span className="hud-value">{formatSize(wall.thickness)}</span>
+      <label className="hud-check">
+        <input type="checkbox" checked={!!wall.partition} onChange={(event) => props.onPartition(event.target.checked)} />
+        Перегородка
+      </label>
       {wall.thickness > 0 && (
         <>
           <button type="button" onClick={() => props.onOpening('passage')}>
@@ -153,14 +162,32 @@ function LeafThumb(props: { hinge: Hinge; side: DoorSide }) {
   )
 }
 
+function hudAnchor(floor: Floor, selection: Selection) {
+  if (selection.kind === 'room') {
+    const room = floor.rooms.find((item) => item.id === selection.id)
+    const points = room ? ringPoints(floor, room.vertexIds) : []
+    if (points.length > 0) {
+      let minX = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (const point of points) {
+        minX = Math.min(minX, point.x)
+        maxX = Math.max(maxX, point.x)
+        maxY = Math.max(maxY, point.y)
+      }
+      return { x: (minX + maxX) / 2, y: maxY }
+    }
+  }
+  return selectionAnchor(floor, selection)
+}
+
 function RoomHud(props: {
   floor: Floor
   id: string
   onRename: (name: string) => void
-  onColor: (color: string) => void
+  onColor: (color: string | null) => void
   onTextFocus: (focused: boolean) => void
-  onIcon: (icon: RoomIcon | null) => void
-  onSymbol: (symbol: string) => void
+  onIcon: (icon: string | null) => void
 }) {
   const room = props.floor.rooms.find((item) => item.id === props.id)
   const [draft, setDraft] = useState(room?.name ?? '')
@@ -199,22 +226,19 @@ function RoomHud(props: {
           }
         }}
       />
-      <select
-        aria-label="Тип помещения"
-        value={room.icon ?? ''}
-        onChange={(event) => {
-          const next = ROOM_TYPES.find((type) => type.id === event.target.value)
-          props.onIcon(next ? next.id : null)
-        }}
-      >
-        <option value="">Без иконки</option>
-        {ROOM_TYPES.map((type) => (
-          <option key={type.id} value={type.id}>
-            {type.name}
-          </option>
-        ))}
-      </select>
+      <IconPicker
+        name={roomIconName(room)}
+        resetLabel="Без иконки"
+        onFocus={props.onTextFocus}
+        onChange={props.onIcon}
+      />
       <div className="swatches">
+        <button
+          type="button"
+          className={room.color === null ? 'swatch type-swatch active' : 'swatch type-swatch'}
+          aria-label="Без цвета"
+          onClick={() => props.onColor(null)}
+        />
         {theme.swatches.map((color) => (
           <button
             key={color}
@@ -226,14 +250,6 @@ function RoomHud(props: {
           />
         ))}
       </div>
-      {room.icon === 'custom' && (
-        <IconPicker
-          name={room.symbol ?? 'circle'}
-          autoFocus
-          onFocus={props.onTextFocus}
-          onChange={props.onSymbol}
-        />
-      )}
     </>
   )
 }

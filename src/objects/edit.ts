@@ -1,7 +1,7 @@
-import { MIN_OBJECT_SPAN } from '../constants'
+import { COPY_OFFSET, MIN_OBJECT_SPAN } from '../constants'
 import { newId } from '../document'
-import type { Access, DoorSide, Floor, Hinge, ObjectKind, PlanObject, RoomIcon, StairDirection } from '../types'
-import { chairsOf, DEFAULT_CHAIR, DEFAULT_SYMBOL, OBJECTS } from './catalog'
+import type { Access, DoorSide, Floor, Hinge, ObjectKind, PlanObject, StairDirection } from '../types'
+import { chairsOf, DEFAULT_CHAIR, OBJECTS } from './catalog'
 import { findIcon } from './iconList'
 import { nextChairEdge } from './placement'
 
@@ -33,8 +33,22 @@ export function placeObject(floor: Floor, kind: ObjectKind, x: number, y: number
     object.direction = spec.direction ?? 'up'
   }
   if (kind === 'table') object.chairs = []
-  if (kind === 'interest') object.symbol = DEFAULT_SYMBOL
   return { floor: { ...floor, objects: [...floor.objects, object] }, id: object.id }
+}
+
+export function duplicateObject(floor: Floor, id: string): { floor: Floor; id: string } | null {
+  const source = floor.objects.find((item) => item.id === id)
+  if (!source) return null
+  const copyId = newId()
+  const copy: PlanObject = {
+    ...source,
+    id: copyId,
+    x: source.x + COPY_OFFSET,
+    y: source.y + COPY_OFFSET,
+    tags: [...source.tags],
+    chairs: source.chairs?.map((chair) => ({ ...chair, id: newId() })),
+  }
+  return { floor: { ...floor, objects: [...floor.objects, copy] }, id: copyId }
 }
 
 export function moveObjectTo(floor: Floor, id: string, x: number, y: number): Floor {
@@ -65,9 +79,33 @@ export function removeObjectTag(floor: Floor, id: string, tag: string): Floor {
   return mapObject(floor, id, (object) => ({ ...object, tags: object.tags.filter((item) => item !== tag) }))
 }
 
-export function setObjectSymbol(floor: Floor, id: string, symbol: string): Floor {
-  if (!findIcon(symbol)) return floor
-  return mapObject(floor, id, (object) => ({ ...object, symbol }))
+export function setObjectSymbol(floor: Floor, id: string, symbol: string | null): Floor {
+  const object = floor.objects.find((item) => item.id === id)
+  if (!object || object.kind === 'stair') return floor
+  if (symbol !== null && !findIcon(symbol)) return floor
+  return mapObject(floor, id, (item) => {
+    if (symbol === null) {
+      if (item.symbol === undefined) return item
+      const next = { ...item }
+      delete next.symbol
+      return next
+    }
+    return { ...item, symbol }
+  })
+}
+
+export function resizeObject(
+  floor: Floor,
+  id: string,
+  next: { x: number; y: number; length: number; width: number },
+): Floor {
+  return mapObject(floor, id, (object) => {
+    const length = clampSpan(next.length)
+    const width = clampSpan(next.width)
+    if (object.kind !== 'stair') return { ...object, x: next.x, y: next.y, length, width }
+    const step = Math.min(Math.max(object.step ?? length, MIN_OBJECT_SPAN), length)
+    return { ...object, x: next.x, y: next.y, length, width, step }
+  })
 }
 
 export function setObjectColor(floor: Floor, id: string, color: string | null): Floor {
@@ -178,21 +216,15 @@ export function setDoorAccess(floor: Floor, id: string, access: Access): Floor {
   }
 }
 
-export function setRoomIcon(floor: Floor, id: string, icon: RoomIcon | null): Floor {
+export function setRoomIcon(floor: Floor, id: string, icon: string | null): Floor {
+  if (icon !== null && !findIcon(icon)) return floor
   return {
     ...floor,
     rooms: floor.rooms.map((room) => {
       if (room.id !== id) return room
-      if (icon === 'custom') return { ...room, icon, symbol: room.symbol ?? DEFAULT_SYMBOL }
-      return { ...room, icon }
+      const next = { ...room, icon }
+      delete next.symbol
+      return next
     }),
-  }
-}
-
-export function setRoomSymbol(floor: Floor, id: string, symbol: string): Floor {
-  if (!findIcon(symbol)) return floor
-  return {
-    ...floor,
-    rooms: floor.rooms.map((room) => (room.id === id ? { ...room, symbol } : room)),
   }
 }

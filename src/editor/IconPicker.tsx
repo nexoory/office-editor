@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FaIcon } from '../objects/faIcon'
-import { findIcon, searchIcons } from '../objects/iconList'
+import { QUICK_ICONS } from '../objects/icons'
+import { findIcon, searchIcons, type IconChoice } from '../objects/iconList'
 
-function IconThumb(props: { name: string; size?: number }) {
-  const icon = findIcon(props.name)
+function IconThumb(props: { name: string | null; size?: number }) {
+  const icon = findIcon(props.name ?? undefined)
   const size = props.size ?? 22
   if (!icon) return null
   return (
@@ -13,19 +14,27 @@ function IconThumb(props: { name: string; size?: number }) {
   )
 }
 
+function quickChoices(): IconChoice[] {
+  return QUICK_ICONS.flatMap((name) => {
+    const icon = findIcon(name)
+    return icon ? [{ name, icon }] : []
+  })
+}
+
 export function IconPicker(props: {
-  name: string
-  onChange: (name: string) => void
+  name: string | null
+  onChange: (name: string | null) => void
   onFocus: (focused: boolean) => void
+  resetLabel?: string
   autoFocus?: boolean
 }) {
   const [query, setQuery] = useState('')
   const input = useRef<HTMLInputElement>(null)
-  const matches = useMemo(() => searchIcons(query), [query])
+  const matches = useMemo(() => (query.trim() ? searchIcons(query) : quickChoices()), [query])
   useEffect(() => {
     if (props.autoFocus) input.current?.focus()
   }, [props.autoFocus])
-  const choose = (name: string) => {
+  const choose = (name: string | null) => {
     props.onChange(name)
     setQuery('')
   }
@@ -55,6 +64,18 @@ export function IconPicker(props: {
           }}
         />
       </div>
+      {props.resetLabel && (
+        <button
+          type="button"
+          className="text-button"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            choose(null)
+          }}
+        >
+          {props.resetLabel}
+        </button>
+      )}
       <div className="icon-picker-list" role="listbox" aria-label="Иконки">
         {matches.length === 0 && <p className="icon-picker-empty">Ничего не найдено</p>}
         {matches.map((choice) => (

@@ -1,5 +1,5 @@
 import { chairsOf } from '../objects/catalog'
-import { chairPose, pointInFrame, rotateHandlePoint } from '../objects/placement'
+import { chairPose, pointInFrame } from '../objects/placement'
 import type { Floor, Point, Selection } from '../types'
 import { doorSwing } from './doors'
 import { analyze, ringPoints } from './faces'
@@ -10,7 +10,6 @@ export type Hit =
   | { kind: 'opening'; id: string }
   | { kind: 'vertex'; id: string }
   | { kind: 'wall'; id: string }
-  | { kind: 'rotate'; id: string }
   | { kind: 'chair'; objectId: string; chairId: string }
   | { kind: 'object'; id: string }
   | { kind: 'room'; id: string }
@@ -36,7 +35,6 @@ export function hitTest(
   zoom: number,
   editing: boolean,
   button: 'left' | 'right',
-  selection: Selection | null = null,
 ): Hit {
   const vertexR = VERTEX_PX / zoom
   const slop = WALL_PX / zoom
@@ -80,13 +78,6 @@ export function hitTest(
       }
     }
     if (bestVertex) return { kind: 'vertex', id: bestVertex.id }
-
-    if (selection?.kind === 'object') {
-      const selected = floor.objects.find((object) => object.id === selection.id)
-      if (selected && dist(point, rotateHandlePoint(selected, zoom)) <= 10 / zoom) {
-        return { kind: 'rotate', id: selected.id }
-      }
-    }
 
     let bestWall: { id: string; score: number } | null = null
     for (const wall of floor.walls) {
@@ -232,7 +223,6 @@ export function hitMatchesSelection(hit: Hit, selection: Selection | null): bool
   if (hit.kind === 'chair' && selection.kind === 'chair') {
     return hit.objectId === selection.objectId && hit.chairId === selection.chairId
   }
-  if (hit.kind === 'rotate' && selection.kind === 'object') return hit.id === selection.id
-  if (hit.kind === 'chair' || hit.kind === 'rotate') return false
+  if (hit.kind === 'chair') return false
   return hit.kind === selection.kind && hit.id === selection.id
 }

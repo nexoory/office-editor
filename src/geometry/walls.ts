@@ -1,13 +1,13 @@
-import type { Floor, Point, Wall } from '../types'
+import type { Floor, OpeningKind, Point, Wall } from '../types'
 import { add, dist, left, lineIntersect, mul, norm, sub } from './math'
 
 export type WallSolid = { wallId: string; points: Point[] }
-export type WallWindow = { wallId: string; openingId: string; points: Point[]; a: Point; b: Point }
+export type WallCut = { wallId: string; openingId: string; kind: OpeningKind; points: Point[]; a: Point; b: Point }
 export type WallDash = { wallId: string; a: Point; b: Point }
 
 export type WallGraphics = {
   solids: WallSolid[]
-  windows: WallWindow[]
+  cuts: WallCut[]
   dashes: WallDash[]
   /** Заливка дыры в вершине, куда сходятся три стены и больше. */
   joins: Point[][]
@@ -118,7 +118,7 @@ function quad(
 
 export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics {
   const solids: WallSolid[] = []
-  const windows: WallWindow[] = []
+  const cuts: WallCut[] = []
   const dashes: WallDash[] = []
 
   for (const wall of floor.walls) {
@@ -134,15 +134,13 @@ export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics
       .filter((opening) => opening.wallId === wall.id)
       .slice()
       .sort((p, q) => p.offset - q.offset)
-    const gaps: { s: number; e: number; windowId?: string }[] = []
+    const gaps: { s: number; e: number; openingId?: string; kind?: OpeningKind }[] = []
     let cursor = 0
     for (const opening of openings) {
       const start = Math.max(0, Math.min(length, opening.offset))
       const end = Math.max(start, Math.min(length, opening.offset + opening.width))
       if (start > cursor + 1e-4) gaps.push({ s: cursor, e: start })
-      if (opening.kind === 'window' && end - start > 1e-4) {
-        gaps.push({ s: start, e: end, windowId: opening.id })
-      }
+      if (end - start > 1e-4) gaps.push({ s: start, e: end, openingId: opening.id, kind: opening.kind })
       cursor = Math.max(cursor, end)
     }
     if (length > cursor + 1e-4) gaps.push({ s: cursor, e: length })
@@ -164,11 +162,12 @@ export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics
         useStart ? startCap : null,
         useEnd ? endCap : null,
       )
-      if (gap.windowId) {
+      if (gap.openingId && gap.kind) {
         const d = norm(sub(ends.b, ends.a))
-        windows.push({
+        cuts.push({
           wallId: wall.id,
-          openingId: gap.windowId,
+          openingId: gap.openingId,
+          kind: gap.kind,
           points,
           a: add(ends.a, mul(d, gap.s)),
           b: add(ends.a, mul(d, gap.e)),
@@ -176,7 +175,7 @@ export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics
       } else solids.push({ wallId: wall.id, points })
     }
   }
-  return { solids, windows, dashes, joins: joinPolygons(floor) }
+  return { solids, cuts, dashes, joins: joinPolygons(floor) }
 }
 
 /** Многоугольник вокруг вершины, который не покрывает ни одна стена. */

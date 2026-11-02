@@ -14,12 +14,12 @@ import {
   lengthLabel,
   type Preview,
 } from '../geometry/preview'
-import { roomInk, theme } from '../theme'
+import { roomFill, roomInk, theme } from '../theme'
 import type { Floor, Point } from '../types'
-import { wallEnds, wallGraphics } from '../geometry/walls'
-import { DoorLeaves, FloorObjects, RotateHandle } from './figures'
+import { wallEnds, wallGraphics, wallLengthOf } from '../geometry/walls'
+import { DoorLeaves, FloorObjects, PlacementGhost } from './figures'
 import { chairsOf } from '../objects/catalog'
-import { ROOM_ICON_SIZE, RoomGlyph } from '../objects/icons'
+import { ROOM_ICON_SIZE, RoomGlyph, roomIconName } from '../objects/icons'
 import { chairPose } from '../objects/placement'
 
 export function Canvas(props: {
@@ -28,7 +28,7 @@ export function Canvas(props: {
   onPointerDown: (info: PointerInfo) => void
   onPointerMove: (info: PointerInfo) => void
   onPointerUp: (info: PointerInfo) => void
-  onWheel: (info: { sx: number; sy: number; deltaY: number; ctrl: boolean }) => void
+  onWheel: (info: { sx: number; sy: number; deltaY: number; deltaMode: number; ctrl: boolean }) => void
 }) {
   const ref = useRef<SVGSVGElement>(null)
   const [size, setSize] = useState({ w: 1, h: 1 })
@@ -44,13 +44,16 @@ export function Canvas(props: {
     })
     observer.observe(element)
     const onWheel = (event: WheelEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
+      const origin = event.target instanceof Element ? event.target : event.target instanceof Node ? event.target.parentElement : null
+      if (origin?.closest('.place-menu, .legend, .icon-picker-list')) return
+      if (origin instanceof HTMLInputElement || origin instanceof HTMLTextAreaElement) return
       event.preventDefault()
       const rect = element.getBoundingClientRect()
       wheel.current({
         sx: event.clientX - rect.left,
         sy: event.clientY - rect.top,
         deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
         ctrl: event.ctrlKey || event.metaKey,
       })
     }
@@ -69,8 +72,6 @@ export function Canvas(props: {
   const analysis = analyze(floor)
   const graphics = wallGraphics(floor, props.editing)
   const ghostGraphics = ghost ? wallGraphics(ghost, props.editing) : null
-  const selectedObjectId = state.selection?.kind === 'object' ? state.selection.id : null
-  const selectedObject = selectedObjectId ? floor.objects.find((item) => item.id === selectedObjectId) : undefined
   const preview = livePreview(state)
   const labels = moveLabels(state, floor)
   const guides =
@@ -127,7 +128,7 @@ export function Canvas(props: {
             <path
               key={room.id}
               d={pathOf(shape.outer, shape.holes)}
-              fill={room.color ?? theme.floor}
+              fill={roomFill(room.color)}
               fillRule="evenodd"
               stroke={selected ? theme.selected : 'none'}
               strokeWidth={selected ? 2 / zoom : 0}
@@ -150,9 +151,21 @@ export function Canvas(props: {
             {ghostGraphics.solids.map((solid, index) => (
               <polygon key={`g${index}`} points={poly(solid.points)} fill={theme.wall} />
             ))}
-            {ghostGraphics.windows.map((item) => (
-              <polygon key={item.openingId} points={poly(item.points)} fill={theme.window} />
-            ))}
+            {ghostGraphics.cuts
+              .filter((item) => item.kind === 'window')
+              .map((item) => (
+                <g key={item.openingId}>
+                  <polygon points={poly(item.points)} fill={theme.window} />
+                  <line
+                    x1={item.a.x}
+                    y1={item.a.y}
+                    x2={item.b.x}
+                    y2={item.b.y}
+                    stroke={theme.windowLine}
+                    strokeWidth={1.2 / zoom}
+                  />
+                </g>
+              ))}
             <DoorLeaves floor={ghost} zoom={zoom} icons={false} selectedId={null} />
           </g>
         )}
@@ -182,16 +195,26 @@ export function Canvas(props: {
           ))}
         {analysis.faces.map((face) => {
           const room = floor.rooms.find((item) => sameIds(item.vertexIds, face.vertexIds))
-          if (!room || (!room.name && !room.icon)) return null
+          if (!room) return null
+          const iconName = roomIconName(room)
+          if (!room.name && !iconName) return null
           const shape = floorShape(floor, face)
           const center = labelPoint(shape.outer, shape.holes)
-          const width = span(shape.outer) * zoom - 8
-          const both = !!room.name && !!room.icon
+          const textBudget = Math.max(0, span(shape.outer) * zoom - 16)
+          const label = room.name ? ellipsize(room.name, textBudget) : ''
           const ink = roomInk(room.color)
           const cover = 2 / zoom
           return (
             <g key={`${room.id}-name`} pointerEvents="none">
-              <mask id={`${room.id}-mark`} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
+              <mask
+                id={`room-mark-${room.id}`}
+                maskUnits="userSpaceOnUse"
+                maskContentUnits="userSpaceOnUse"
+                x={bounds.x}
+                y={bounds.y}
+                width={bounds.w}
+                height={bounds.h}
+              >
                 <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} fill="#fff" />
                 {floor.objects.map((object) => (
                   <polygon key={object.id} points={footprintPoints(object, cover)} fill="#000" />
@@ -202,23 +225,26 @@ export function Canvas(props: {
                   )),
                 )}
               </mask>
-              <g mask={`url(#${room.id}-mark)`}>
+              <g mask={`url(#room-mark-${room.id})`}>
                 <g transform={`translate(${center.x} ${center.y}) scale(${1 / zoom})`}>
-                  {room.icon && (
-                    <g transform={`translate(${-ROOM_ICON_SIZE / 2} ${both ? -ROOM_ICON_SIZE - 4 : -ROOM_ICON_SIZE / 2})`}>
-                      <RoomGlyph icon={room.icon} symbol={room.symbol} color={ink} />
+                  {iconName && (
+                    <g transform={`translate(${-ROOM_ICON_SIZE / 2} ${label ? -ROOM_ICON_SIZE - 4 : -ROOM_ICON_SIZE / 2})`}>
+                      <RoomGlyph name={iconName} color={ink} />
                     </g>
                   )}
-                  {room.name && (
+                  {label && (
                     <text
-                      y={both ? 14 : 0}
+                      y={iconName ? 14 : 0}
                       textAnchor="middle"
                       dominantBaseline="middle"
                       fontSize={20}
                       fontWeight={600}
                       fill={ink}
+                      stroke={theme.labelHalo}
+                      strokeWidth={3}
+                      paintOrder="stroke"
                     >
-                      {ellipsize(room.name, width)}
+                      {label}
                     </text>
                   )}
                 </g>
@@ -226,7 +252,10 @@ export function Canvas(props: {
             </g>
           )
         })}
-        <FloorObjects floor={floor} selection={state.selection} />
+        <FloorObjects floor={floor} selection={state.selection} zoom={zoom} filter={state.legendFilter} />
+        {state.placing?.dragging && (
+          <PlacementGhost kind={state.placing.kind} x={state.placing.x} y={state.placing.y} zoom={zoom} />
+        )}
         <g pointerEvents="none">
           {graphics.joins.map((points, index) => (
             <polygon
@@ -245,22 +274,24 @@ export function Canvas(props: {
               fill={state.selection?.kind === 'wall' && state.selection.id === solid.wallId ? theme.selected : theme.wall}
             />
           ))}
-          {graphics.windows.map((item) => (
+          {graphics.cuts.map((item) => (
             <g key={item.openingId}>
               <polygon
                 points={poly(item.points)}
-                fill={theme.window}
+                fill={theme.opening}
                 stroke={state.selection?.kind === 'opening' && state.selection.id === item.openingId ? theme.selected : 'none'}
                 strokeWidth={2 / zoom}
               />
-              <line
-                x1={item.a.x}
-                y1={item.a.y}
-                x2={item.b.x}
-                y2={item.b.y}
-                stroke={theme.windowLine}
-                strokeWidth={1.2 / zoom}
-              />
+              {item.kind === 'window' && (
+                <line
+                  x1={item.a.x}
+                  y1={item.a.y}
+                  x2={item.b.x}
+                  y2={item.b.y}
+                  stroke={theme.windowLine}
+                  strokeWidth={1.2 / zoom}
+                />
+              )}
             </g>
           ))}
           {graphics.dashes.map((dash) => (
@@ -275,36 +306,14 @@ export function Canvas(props: {
               strokeDasharray={`${6 / zoom} ${5 / zoom}`}
             />
           ))}
-          {floor.openings
-            .filter(
-              (opening) =>
-                (opening.kind === 'passage' || opening.kind === 'door') &&
-                state.selection?.kind === 'opening' &&
-                state.selection.id === opening.id,
-            )
-            .map((opening) => {
-              const wall = floor.walls.find((item) => item.id === opening.wallId)
-              const ends = wall && wallEnds(floor, wall)
-              if (!wall || !ends || wall.thickness <= 0) return null
-              const rect = openingQuad(ends.a, ends.b, wall.thickness, opening.offset, opening.width)
-              return (
-                <polygon
-                  key={opening.id}
-                  points={poly(rect)}
-                  fill="none"
-                  stroke={theme.selected}
-                  strokeWidth={2 / zoom}
-                />
-              )
-            })}
         </g>
         <DoorLeaves
           floor={floor}
           zoom={zoom}
           icons
+          dimmed={state.legendFilter !== null}
           selectedId={state.selection?.kind === 'opening' ? state.selection.id : null}
         />
-        {props.editing && selectedObject && <RotateHandle object={selectedObject} zoom={zoom} />}
         {props.editing &&
           floor.vertices.map((vertex) => {
             const selected = state.selection?.kind === 'vertex' && state.selection.id === vertex.id
@@ -343,7 +352,11 @@ export function Canvas(props: {
           />
         ))}
         {preview && preview.length > 1e-3 && <PreviewShape preview={preview} zoom={zoom} />}
-        {[...labels, ...(preview && preview.length >= 0.01 ? [lengthLabel(preview.start, preview.end, zoom, formatLength(preview.length))] : [])].map(
+        {[
+          ...labels,
+          ...(selectedWallLabel(state, floor, props.editing) ? [selectedWallLabel(state, floor, props.editing)!] : []),
+          ...(preview && preview.length >= 0.01 ? [lengthLabel(preview.start, preview.end, zoom, formatLength(preview.length))] : []),
+        ].map(
           (label, index) => (
             <text
               key={`len${index}`}
@@ -464,6 +477,22 @@ function livePreview(state: EditorState): Preview | null {
     lockWallId: state.axisLock,
     chain: state.chain,
   }).preview
+}
+
+function selectedWallLabel(state: EditorState, floor: Floor, editing: boolean) {
+  const selection = state.selection
+  if (!editing || selection?.kind !== 'wall') return null
+  if (state.gesture?.type === 'move-wall' || state.gesture?.type === 'move-vertex') return null
+  const wall = floor.walls.find((item) => item.id === selection.id)
+  const ends = wall && wallEnds(floor, wall)
+  if (!wall || !ends) return null
+  // Плашка висит ниже середины. Подпись поднимается над телом стены, чтобы не попасть под неё.
+  const lift = wall.thickness / 2 + 18 / state.view.zoom
+  return {
+    x: (ends.a.x + ends.b.x) / 2,
+    y: (ends.a.y + ends.b.y) / 2 - lift,
+    text: formatLength(wallLengthOf(floor, wall)),
+  }
 }
 
 function moveLabels(state: EditorState, floor: Floor) {

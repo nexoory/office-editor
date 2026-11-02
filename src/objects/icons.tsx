@@ -1,41 +1,36 @@
-import { faBowlFood, faCouch, faDumbbell, faIdBadge, faKey, faPerson, faShirt, faUsers } from '@fortawesome/free-solid-svg-icons'
-import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
+import { faIdBadge, faKey } from '@fortawesome/free-solid-svg-icons'
 import { theme } from '../theme'
-import type { Access, RoomIcon } from '../types'
+import type { Access } from '../types'
 import { FaIcon } from './faIcon'
 import { findIcon } from './iconList'
 
-const ROOM_ICONS: Record<Exclude<RoomIcon, 'custom'>, IconDefinition> = {
-  meeting: faUsers,
-  wc: faPerson,
-  gym: faDumbbell,
-  lounge: faCouch,
-  dining: faBowlFood,
-  cloakroom: faShirt,
+const LEGACY_ROOM_ICONS: Record<string, string> = {
+  meeting: 'users',
+  wc: 'person',
+  gym: 'dumbbell',
+  lounge: 'couch',
+  dining: 'bowl-food',
+  cloakroom: 'shirt',
 }
 
-const ROOM_NAMES: Record<RoomIcon, string> = {
-  meeting: 'Переговорная',
-  wc: 'Туалет',
-  gym: 'Спортзал',
-  lounge: 'Комната отдыха',
-  dining: 'Столовая',
-  cloakroom: 'Гардеробная',
-  custom: 'Своя иконка',
-}
-
-export const ROOM_TYPES: { id: RoomIcon; name: string }[] = (Object.keys(ROOM_NAMES) as RoomIcon[]).map((id) => ({
-  id,
-  name: ROOM_NAMES[id],
-}))
+export const QUICK_ICONS = ['users', 'person', 'dumbbell', 'couch', 'bowl-food', 'shirt']
 
 export const ROOM_ICON_SIZE = 48
 export const ACCESS_ICON_SIZE = 36
 
-export function RoomGlyph(props: { icon: RoomIcon; symbol?: string; size?: number; color?: string }) {
+/** Имя знака комнаты. Старый тип и «своя иконка» читаются здесь, в документ заново не пишутся. */
+export function roomIconName(room: { icon: string | null; symbol?: string }): string | null {
+  if (!room.icon) return null
+  if (room.icon === 'custom') return findIcon(room.symbol) ? (room.symbol ?? null) : null
+  const legacy = LEGACY_ROOM_ICONS[room.icon]
+  if (legacy) return legacy
+  return findIcon(room.icon) ? room.icon : null
+}
+
+export function RoomGlyph(props: { name: string | null; size?: number; color?: string }) {
   const size = props.size ?? ROOM_ICON_SIZE
   const color = props.color ?? theme.label
-  const icon = props.icon === 'custom' ? findIcon(props.symbol) : ROOM_ICONS[props.icon]
+  const icon = findIcon(props.name ?? undefined)
   if (!icon) return null
   return (
     <svg width={size} height={size} viewBox={`${-size / 2} ${-size / 2} ${size} ${size}`} overflow="visible" aria-hidden="true">
@@ -44,13 +39,13 @@ export function RoomGlyph(props: { icon: RoomIcon; symbol?: string; size?: numbe
   )
 }
 
-export function AccessGlyph(props: { access: Exclude<Access, 'none'>; size?: number }) {
+export function AccessGlyph(props: { access: Exclude<Access, 'none'>; size?: number; color?: string }) {
   const size = props.size ?? ACCESS_ICON_SIZE
-  const color = props.access === 'badge' ? theme.doorBadge : theme.doorKey
+  const color = props.color ?? (props.access === 'badge' ? theme.doorBadge : theme.doorKey)
   const icon = props.access === 'badge' ? faIdBadge : faKey
   return (
     <svg width={size} height={size} viewBox={`${-size / 2} ${-size / 2} ${size} ${size}`} overflow="visible" aria-hidden="true">
-      <FaIcon icon={icon} size={size} color={color} halo="#ffffff" haloWidth={size * 0.14} />
+      <FaIcon icon={icon} size={size} color={color} />
     </svg>
   )
 }

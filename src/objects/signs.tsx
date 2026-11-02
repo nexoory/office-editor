@@ -1,12 +1,16 @@
-import { faArrowRightLong, faBed, faCircle, faComputer, faCouch, faDroplet, faShirt, faShower, faSink, faSnowflake, faStairs, faToilet, faUtensils } from '@fortawesome/free-solid-svg-icons'
-import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
+import { faArrowRightLong } from '@fortawesome/free-solid-svg-icons'
 import { theme } from '../theme'
 import type { ObjectKind, StairDirection } from '../types'
+import { typeSymbol } from './catalog'
 import { FaIcon } from './faIcon'
 import { findIcon } from './iconList'
+import { ACCESS_ICON_SIZE } from './icons'
 import { stairDepths } from './placement'
 
 const ink = theme.wall
+
+/** Доля меньшей стороны. Крупный предмет держит знак в этой доле, мелкий не опускает его ниже размера пропуска. */
+const ICON_FIT = 0.75
 
 const line = {
   fill: 'none' as const,
@@ -15,19 +19,6 @@ const line = {
   vectorEffect: 'non-scaling-stroke' as const,
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,
-}
-
-const OBJECT_ICONS: Partial<Record<ObjectKind, IconDefinition>> = {
-  stair: faStairs,
-  cooler: faDroplet,
-  microwave: faUtensils,
-  wardrobe: faShirt,
-  toilet: faToilet,
-  sink: faSink,
-  shower: faShower,
-  fridge: faSnowflake,
-  bed: faBed,
-  sofa: faCouch,
 }
 
 function Footprint(props: { length: number; width: number; color: string }) {
@@ -42,7 +33,7 @@ function Footprint(props: { length: number; width: number; color: string }) {
       ry={radius}
       fill={props.color}
       fillOpacity={0.4}
-      stroke={ink}
+      stroke={props.color}
       strokeWidth={1.5}
       vectorEffect="non-scaling-stroke"
     />
@@ -75,9 +66,11 @@ export function SignGraphic(props: {
   length: number
   width: number
   color: string
+  zoom: number
   step?: number
   direction?: StairDirection
   symbol?: string
+  dimmed?: boolean
 }) {
   if (props.kind === 'stair') {
     return (
@@ -89,67 +82,43 @@ export function SignGraphic(props: {
       />
     )
   }
-  if (props.kind === 'interest') {
-    const icon = findIcon(props.symbol) ?? findIcon('circle')
-    const size = Math.min(props.length, props.width) * 0.66
-    return (
-      <g>
-        <Footprint length={props.length} width={props.width} color={props.color} />
-        {icon && <FaIcon icon={icon} size={size} color={ink} />}
-      </g>
-    )
-  }
-  if (props.kind === 'table') {
-    return (
-      <g transform={`scale(${props.length} ${props.width})`}>
-        <rect x={-0.5} y={-0.5} width={1} height={1} rx={0.08} {...line} fill={props.color} fillOpacity={0.34} />
-      </g>
-    )
-  }
-  const icon = OBJECT_ICONS[props.kind]
-  const size = Math.min(props.length, props.width) * 0.66
+  const icon = findIcon(props.symbol) ?? findIcon(typeSymbol(props.kind))
+  const fitted = Math.min(props.length, props.width) * ICON_FIT * props.zoom
+  const full = Math.max(ACCESS_ICON_SIZE, fitted)
+  const size = props.dimmed ? full / 3 : full
   return (
     <g>
       <Footprint length={props.length} width={props.width} color={props.color} />
-      {icon && <FaIcon icon={icon} size={size} color={ink} />}
+      {icon && (
+        <g transform={`scale(${1 / props.zoom})`} opacity={props.dimmed ? 0.4 : 1}>
+          <FaIcon icon={icon} size={size} color={props.dimmed ? theme.muted : props.color} />
+        </g>
+      )}
     </g>
   )
 }
 
 export function ChairGraphic(props: { color: string }) {
+  const mark = { ...line, stroke: props.color }
   return (
     <g>
-      <rect x={-0.34} y={-0.46} width={0.68} height={0.5} rx={0.16} {...line} fill={props.color} />
-      <rect x={-0.46} y={0.16} width={0.92} height={0.28} rx={0.14} {...line} fill={props.color} />
+      <rect x={-0.34} y={-0.46} width={0.68} height={0.5} rx={0.16} {...mark} fill={props.color} fillOpacity={0.4} />
+      <rect x={-0.46} y={0.16} width={0.92} height={0.28} rx={0.14} {...mark} fill={props.color} fillOpacity={0.4} />
     </g>
   )
 }
 
-function MarkIcon(props: { icon: IconDefinition; box: number; color: string }) {
+function MarkIcon(props: { name: string; box: number; color: string }) {
+  const icon = findIcon(props.name)
+  if (!icon) return null
   return (
     <svg width={props.box} height={props.box} viewBox={`${-props.box / 2} ${-props.box / 2} ${props.box} ${props.box}`} aria-hidden="true">
-      <FaIcon icon={props.icon} size={props.box * 0.88} color={props.color} />
+      <FaIcon icon={icon} size={props.box * 0.88} color={props.color} />
     </svg>
   )
 }
 
-export function TypeMark(props: { kind: ObjectKind; box?: number; menu?: boolean }) {
+export function TypeMark(props: { kind: ObjectKind; box?: number }) {
   const box = props.box ?? 28
-  const color = theme.objectNeutral[props.kind]
-  if (props.kind === 'table') {
-    if (props.menu) return <MarkIcon icon={faComputer} box={box} color={color} />
-    return (
-      <svg width={box} height={box} viewBox="0 0 28 28" aria-hidden="true">
-        <rect x={4} y={7} width={20} height={14} rx={3.5} fill={color} fillOpacity={0.9} stroke={ink} strokeWidth={1.5} />
-      </svg>
-    )
-  }
-  if (props.kind === 'interest') return <MarkIcon icon={faCircle} box={box} color={color} />
-  const icon = OBJECT_ICONS[props.kind]
-  if (!icon) return null
-  return (
-    <svg width={box} height={box} viewBox={`${-box / 2} ${-box / 2} ${box} ${box}`} aria-hidden="true">
-      <FaIcon icon={icon} size={box * 0.88} color={color} />
-    </svg>
-  )
+  return <MarkIcon name={typeSymbol(props.kind)} box={box} color={theme.objectNeutral[props.kind]} />
 }

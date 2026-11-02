@@ -2,11 +2,11 @@ import { doorSwing } from '../geometry/doors'
 import { add, mul, norm, sub } from '../geometry/math'
 import { wallEnds } from '../geometry/walls'
 import { ACCESS_ICON_SIZE, AccessGlyph } from '../objects/icons'
-import { chairsOf, objectFill, stairDirectionOf, stairStepOf } from '../objects/catalog'
-import { chairPose, rotateHandlePoint, worldToLocal } from '../objects/placement'
+import { chairsOf, OBJECTS, objectFill, stairDirectionOf, stairStepOf } from '../objects/catalog'
+import { chairPose, worldToLocal } from '../objects/placement'
 import { ChairGraphic, SignGraphic } from '../objects/signs'
 import { theme } from '../theme'
-import type { Floor, PlanObject, Selection } from '../types'
+import type { Floor, ObjectKind, Selection } from '../types'
 
 const outline = {
   fill: 'none' as const,
@@ -15,7 +15,7 @@ const outline = {
   vectorEffect: 'non-scaling-stroke' as const,
 }
 
-export function FloorObjects(props: { floor: Floor; selection: Selection | null }) {
+export function FloorObjects(props: { floor: Floor; selection: Selection | null; zoom: number; filter: ObjectKind | null }) {
   return (
     <g pointerEvents="none">
       {props.floor.objects.map((object) => (
@@ -28,6 +28,8 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null 
             direction={object.kind === 'stair' ? stairDirectionOf(object) : undefined}
             color={objectFill(object)}
             symbol={object.symbol}
+            zoom={props.zoom}
+            dimmed={!!props.filter && object.kind !== props.filter && object.kind !== 'stair'}
           />
           {props.selection?.kind === 'object' && props.selection.id === object.id && (
             <rect x={-object.length / 2} y={-object.width / 2} width={object.length} height={object.width} {...outline} />
@@ -57,22 +59,25 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null 
   )
 }
 
-export function RotateHandle(props: { object: PlanObject; zoom: number }) {
-  const point = rotateHandlePoint(props.object, props.zoom)
+export function PlacementGhost(props: { kind: ObjectKind; x: number; y: number; zoom: number }) {
+  const spec = OBJECTS[props.kind]
   return (
-    <circle
-      cx={point.x}
-      cy={point.y}
-      r={7 / props.zoom}
-      fill={theme.canvas}
-      stroke={theme.selected}
-      strokeWidth={1.6 / props.zoom}
-      pointerEvents="none"
-    />
+    <g transform={`translate(${props.x} ${props.y})`} opacity={0.55} pointerEvents="none">
+      <SignGraphic
+        kind={props.kind}
+        length={spec.length}
+        width={spec.width}
+        step={spec.step}
+        direction={spec.direction}
+        color={theme.objectNeutral[props.kind]}
+        zoom={props.zoom}
+      />
+    </g>
   )
 }
 
-export function DoorLeaves(props: { floor: Floor; zoom: number; icons: boolean; selectedId: string | null }) {
+export function DoorLeaves(props: { floor: Floor; zoom: number; icons: boolean; selectedId: string | null; dimmed?: boolean }) {
+  const iconSize = props.dimmed ? ACCESS_ICON_SIZE / 3 : ACCESS_ICON_SIZE
   return (
     <g pointerEvents="none">
       {props.floor.walls.flatMap((wall) => {
@@ -111,9 +116,9 @@ export function DoorLeaves(props: { floor: Floor; zoom: number; icons: boolean; 
                 />
                 <circle cx={swing.hinge.x} cy={swing.hinge.y} r={3.2} fill={theme.wall} />
                 {props.icons && opening.access && opening.access !== 'none' && (
-                  <g transform={`translate(${iconAt.x} ${iconAt.y}) scale(${1 / props.zoom})`}>
-                    <g transform={`translate(${-ACCESS_ICON_SIZE / 2} ${-ACCESS_ICON_SIZE / 2})`}>
-                      <AccessGlyph access={opening.access} />
+                  <g transform={`translate(${iconAt.x} ${iconAt.y}) scale(${1 / props.zoom})`} opacity={props.dimmed ? 0.4 : 1}>
+                    <g transform={`translate(${-iconSize / 2} ${-iconSize / 2})`}>
+                      <AccessGlyph access={opening.access} size={iconSize} color={props.dimmed ? theme.muted : undefined} />
                     </g>
                   </g>
                 )}

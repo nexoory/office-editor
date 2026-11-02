@@ -1,4 +1,4 @@
-import { CHAIR_GAP } from '../constants'
+import { CHAIR_GAP, MIN_OBJECT_SPAN } from '../constants'
 import type { Chair, PlanObject, Point } from '../types'
 import { stairStepOf } from './catalog'
 
@@ -29,8 +29,34 @@ export function pointInFrame(
   return Math.abs(local.x) <= frame.length / 2 + pad && Math.abs(local.y) <= frame.width / 2 + pad
 }
 
-export function rotateHandlePoint(object: PlanObject, zoom: number): Point {
-  return localToWorld(object, { x: object.length / 2 + 16 / zoom, y: 0 })
+/** Противоположный угол остаётся на месте, поворот не меняется. */
+export function resizedFrame(
+  object: PlanObject,
+  fixed: Point,
+  cursor: Point,
+  shift: boolean,
+  aspect: number,
+): { x: number; y: number; length: number; width: number } {
+  const c = Math.cos(object.rotation)
+  const s = Math.sin(object.rotation)
+  const dx = cursor.x - fixed.x
+  const dy = cursor.y - fixed.y
+  let length = Math.max(MIN_OBJECT_SPAN, dx * c + dy * s)
+  let width = Math.max(MIN_OBJECT_SPAN, -dx * s + dy * c)
+  if (shift && aspect > 0) {
+    if (width * aspect >= length) length = Math.max(MIN_OBJECT_SPAN, width * aspect)
+    else width = Math.max(MIN_OBJECT_SPAN, length / aspect)
+  }
+  length = Math.max(MIN_OBJECT_SPAN, Math.round(length))
+  width = Math.max(MIN_OBJECT_SPAN, Math.round(width))
+  const hx = length / 2
+  const hy = width / 2
+  return {
+    x: fixed.x + hx * c - hy * s,
+    y: fixed.y + hx * s + hy * c,
+    length,
+    width,
+  }
 }
 
 /**

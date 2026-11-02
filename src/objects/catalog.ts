@@ -16,6 +16,7 @@ export const OBJECT_ORDER: ObjectKind[] = [
   'table',
   'cooler',
   'microwave',
+  'printer',
   'wardrobe',
   'toilet',
   'sink',
@@ -31,6 +32,7 @@ export const OBJECTS: Record<ObjectKind, ObjectSpec> = {
   table: { kind: 'table', name: 'Стол', length: 150, width: 100 },
   cooler: { kind: 'cooler', name: 'Кулер', length: 40, width: 40 },
   microwave: { kind: 'microwave', name: 'Микроволновка', length: 50, width: 35 },
+  printer: { kind: 'printer', name: 'Принтер', length: 50, width: 40 },
   wardrobe: { kind: 'wardrobe', name: 'Шкаф', length: 100, width: 60 },
   toilet: { kind: 'toilet', name: 'Унитаз', length: 40, width: 70 },
   sink: { kind: 'sink', name: 'Раковина', length: 50, width: 40 },
@@ -38,10 +40,29 @@ export const OBJECTS: Record<ObjectKind, ObjectSpec> = {
   fridge: { kind: 'fridge', name: 'Холодильник', length: 60, width: 70 },
   bed: { kind: 'bed', name: 'Кровать', length: 200, width: 90 },
   sofa: { kind: 'sofa', name: 'Диван', length: 180, width: 80 },
-  interest: { kind: 'interest', name: 'Область', length: 120, width: 80 },
+  interest: { kind: 'interest', name: 'Прочее', length: 120, width: 80 },
 }
 
-export const DEFAULT_SYMBOL = 'circle'
+/** Знак типа. На плане лестница его не рисует: там ступени и стрелка. */
+export const TYPE_SYMBOL: Record<ObjectKind, string> = {
+  stair: 'stairs',
+  table: 'computer',
+  cooler: 'droplet',
+  microwave: 'utensils',
+  printer: 'print',
+  wardrobe: 'box-archive',
+  toilet: 'toilet',
+  sink: 'sink',
+  shower: 'shower',
+  fridge: 'snowflake',
+  bed: 'bed',
+  sofa: 'couch',
+  interest: 'circle',
+}
+
+export function typeSymbol(kind: ObjectKind): string {
+  return TYPE_SYMBOL[kind]
+}
 
 export const CHAIR_NAME = 'Кресло'
 
@@ -70,7 +91,7 @@ export function chairsOf(object: PlanObject) {
 export const DEFAULT_CHAIR = { length: CHAIR_LENGTH, width: CHAIR_WIDTH }
 
 /** Как поле редактируется, и в каком режиме оно вообще есть на экране. */
-export type FieldControl = 'readonly' | 'text' | 'tags' | 'color' | 'meters' | 'direction' | 'chairs' | 'icon' | 'remove'
+export type FieldControl = 'readonly' | 'text' | 'tags' | 'color' | 'meters' | 'direction' | 'chairs' | 'icon' | 'copy' | 'remove'
 
 export type ObjectField = {
   id: string
@@ -85,20 +106,19 @@ export const OBJECT_FIELDS: ObjectField[] = [
   { id: 'typeName', control: 'readonly', edit: true, view: true },
   { id: 'note', control: 'text', edit: true, view: true },
   { id: 'tags', control: 'tags', edit: true, view: true },
-  { id: 'symbol', control: 'icon', edit: true, view: false, kinds: ['interest'] },
+  { id: 'symbol', control: 'icon', edit: true, view: false, except: ['stair'] },
   { id: 'color', control: 'color', edit: true, view: false, except: ['stair'] },
   { id: 'length', control: 'meters', edit: true, view: false },
   { id: 'width', control: 'meters', edit: true, view: false },
   { id: 'step', control: 'meters', edit: true, view: false, kinds: ['stair'] },
   { id: 'direction', control: 'direction', edit: true, view: false, kinds: ['stair'] },
   { id: 'chairs', control: 'chairs', edit: true, view: false, kinds: ['table'] },
+  { id: 'copy', control: 'copy', edit: true, view: false },
   { id: 'remove', control: 'remove', edit: true, view: false },
 ]
 
 export const CHAIR_FIELDS: ObjectField[] = [
   { id: 'typeName', control: 'readonly', edit: true, view: false },
-  { id: 'length', control: 'meters', edit: true, view: false },
-  { id: 'width', control: 'meters', edit: true, view: false },
   { id: 'remove', control: 'remove', edit: true, view: false },
 ]
 

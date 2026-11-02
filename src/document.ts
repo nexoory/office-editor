@@ -193,8 +193,9 @@ function splitWall(floor: Floor, wallId: string, point: Point): { floor: Floor; 
   )
   if (blocked) return null
   const vertexId = newId()
-  const first: Wall = { id: newId(), a: wall.a, b: vertexId, thickness: wall.thickness }
-  const second: Wall = { id: newId(), a: vertexId, b: wall.b, thickness: wall.thickness }
+  const partition = wall.partition ? { partition: true as const } : {}
+  const first: Wall = { id: newId(), a: wall.a, b: vertexId, thickness: wall.thickness, ...partition }
+  const second: Wall = { id: newId(), a: vertexId, b: wall.b, thickness: wall.thickness, ...partition }
   const openings = floor.openings.map((opening) => {
     if (opening.wallId !== wall.id) return opening
     if (opening.offset + opening.width <= offset + 1e-4) return { ...opening, wallId: first.id }
@@ -250,6 +251,7 @@ export function addSegmentGraph(
   start: SegmentEnd,
   end: SegmentEnd,
   thickness: number,
+  partition = false,
 ): { floor: Floor; wallId: string; startId: string; endId: string } | null {
   if (dist(start, end) < MIN_SPAN) return null
   if (segmentRejected(floor, start, end)) return null
@@ -273,7 +275,16 @@ export function addSegmentGraph(
     endId: resolvedEnd.id,
     floor: {
       ...resolvedEnd.floor,
-      walls: [...resolvedEnd.floor.walls, { id: wallId, a: resolvedStart.id, b: resolvedEnd.id, thickness }],
+      walls: [
+        ...resolvedEnd.floor.walls,
+        {
+          id: wallId,
+          a: resolvedStart.id,
+          b: resolvedEnd.id,
+          thickness,
+          ...(partition ? { partition: true as const } : {}),
+        },
+      ],
     },
   }
 }
@@ -330,9 +341,10 @@ export function deleteVertex(floor: Floor, vertexId: string, selection: Selectio
     )
     if (duplicate || segmentRejected(remaining, p1, p2)) return null
     const thickness = Math.max(touching[0].thickness, touching[1].thickness)
+    const partition = touching[0].partition && touching[1].partition ? { partition: true as const } : {}
     const next = cleanup({
       ...remaining,
-      walls: [...remaining.walls, { id: newId(), a: n1, b: n2, thickness }],
+      walls: [...remaining.walls, { id: newId(), a: n1, b: n2, thickness, ...partition }],
     })
     return syncRooms(floor, next, selection)
   }
@@ -366,6 +378,24 @@ export function deleteRoom(floor: Floor, roomId: string, selection: Selection | 
     openings: floor.openings.filter((opening) => !remove.has(opening.wallId)),
   })
   return syncRooms(floor, next, selection, [roomId])
+}
+
+export function setPartition(floor: Floor, wallId: string, partition: boolean, selection: Selection | null): Floor {
+  const wall = floor.walls.find((item) => item.id === wallId)
+  if (!wall || !!wall.partition === partition) return floor
+  const next: Floor = {
+    ...floor,
+    walls: floor.walls.map((item) => {
+      if (item.id !== wallId) return item
+      if (!partition) {
+        const rest = { ...item }
+        delete rest.partition
+        return rest
+      }
+      return { ...item, partition: true }
+    }),
+  }
+  return syncRooms(floor, next, selection)
 }
 
 export function setThickness(floor: Floor, wallId: string, thickness: number): Floor {
@@ -512,6 +542,7 @@ export function raiseGhostWalls(
       { x: ends.a.x, y: ends.a.y },
       { x: ends.b.x, y: ends.b.y },
       wall.thickness,
+      !!wall.partition,
     )
     if (!graph) continue
     current = graph.floor

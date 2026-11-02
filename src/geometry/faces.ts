@@ -25,9 +25,10 @@ function vertexMap(floor: Floor) {
 
 function walkCycles(floor: Floor): Cycle[] {
   const pos = vertexMap(floor)
+  const walls = floor.walls.filter((wall) => !wall.partition)
   const adj = new Map<string, { to: string; wallId: string; angle: number }[]>()
   for (const vertex of floor.vertices) adj.set(vertex.id, [])
-  for (const wall of floor.walls) {
+  for (const wall of walls) {
     const a = pos.get(wall.a)
     const b = pos.get(wall.b)
     if (!a || !b || dist(a, b) < 1e-8) continue
@@ -48,7 +49,7 @@ function walkCycles(floor: Floor): Cycle[] {
 
   const used = new Set<string>()
   const cycles: Cycle[] = []
-  for (const wall of floor.walls) {
+  for (const wall of walls) {
     for (const [startU, startV] of [
       [wall.a, wall.b],
       [wall.b, wall.a],

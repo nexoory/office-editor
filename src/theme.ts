@@ -10,6 +10,8 @@ export const theme = {
   ghostVertex: 'rgba(74, 71, 66, 0.5)',
   window: '#fbfaf6',
   windowLine: '#4a4742',
+  /** Вырез проёма: темнее пола, светлее стены. В документ не пишется. */
+  opening: '#d4cfc6',
   label: '#2c2a26',
   labelHalo: '#f4f2ec',
   guide: '#c4a15a',
@@ -27,6 +29,7 @@ export const theme = {
     table: '#a89880',
     cooler: '#7f97a8',
     microwave: '#8d8680',
+    printer: '#8e9298',
     wardrobe: '#9a8b78',
     toilet: '#7f9aa3',
     sink: '#6e96a4',
@@ -46,6 +49,23 @@ export const theme = {
     '#a9c0b6',
     '#e2b7a6',
   ],
+}
+
+function mixHex(color: string, toward: string, amount: number): string {
+  const channel = (hex: string) => {
+    const value = Number.parseInt(hex.replace('#', ''), 16)
+    return [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+  }
+  const from = channel(color)
+  const to = channel(toward)
+  const mixed = from.map((part, index) => Math.round(part * amount + to[index] * (1 - amount)))
+  return `#${mixed.map((part) => part.toString(16).padStart(2, '0')).join('')}`
+}
+
+/** Образец, разбавленный холстом, чтобы предметы читались на полу. */
+export function roomFill(color: string | null): string {
+  if (!color) return theme.floor
+  return mixHex(color, theme.canvas, 0.34)
 }
 
 export function roomInk(color: string | null): string {
