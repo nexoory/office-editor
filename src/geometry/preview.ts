@@ -2,9 +2,10 @@ import { ALIGN_DEG, DEFAULT_THICKNESS, MIN_SPAN } from '../constants'
 import type { SegmentEnd } from '../document'
 import { thicknessAlongGhost } from '../document'
 import type { Floor, Point } from '../types'
+import { alignThreshold, collectAlignRefs, pointAlignRefs, snapToAlignments } from './align'
 import { segmentRejected } from './collide'
 import { formatLength } from './formatLength'
-import { add, angleOf, constrainAngle, dist, left, mul, norm, projectLine, segmentParams, sub } from './math'
+import { add, angleOf, constrainAngle, dist, left, mul, norm, projectLine, projectSegment, segmentParams, sub } from './math'
 import { snapPoint, type SnapHit } from './snap'
 import { alongWall, wallEnds, wallLengthOf } from './walls'
 
@@ -104,7 +105,9 @@ export function computePreview(options: {
     excludeVertexIds: exclude,
     ray,
   })
-  let end = clampToWalls(options.floor, anchor, segmentFromSnap(snapped.snap))
+  const extra = [anchor, ...(options.chain ?? []).map((point) => ({ x: point.x, y: point.y }))]
+  let end = alignSegmentEnd(options.floor, segmentFromSnap(snapped.snap), anchor, options.zoom, snapped.snap, ray, exclude, extra)
+  end = clampToWalls(options.floor, anchor, end)
   const closing = !!(
     chain &&
     chain.length >= 3 &&
@@ -152,7 +155,76 @@ export function anchorAt(
     allowGhost: true,
     lockWallId,
   })
-  return { point: segmentFromSnap(snapped.snap), lockWallId: snapped.lockWallId }
+  const end = alignSegmentEnd(floor, segmentFromSnap(snapped.snap), cursor, zoom, snapped.snap, null)
+  return { point: end, lockWallId: snapped.lockWallId }
+}
+
+/** Свободный конец или точка на стене садится на общую ось с уже стоящей геометрией. */
+function alignSegmentEnd(
+  floor: Floor,
+  end: SegmentEnd,
+  anchor: Point,
+  zoom: number,
+  snap: SnapHit,
+  ray: { origin: Point; angle: number } | null,
+  avoidVertexIds: string[] = [],
+  extraPoints: Point[] = [],
+): SegmentEnd {
+  if (snap.kind !== 'free' && snap.kind !== 'wall') return end
+  const point = { x: end.x, y: end.y }
+  let dir: Point | null = null
+  let span: { a: Point; b: Point } | null = null
+  if (snap.kind === 'wall') {
+    const wall = floor.walls.find((item) => item.id === snap.wallId)
+    const ends = wall && wallEnds(floor, wall)
+    if (ends) {
+      dir = norm(sub(ends.b, ends.a))
+      span = ends
+    }
+  } else if (ray) {
+    dir = { x: Math.cos(ray.angle), y: Math.sin(ray.angle) }
+  }
+  const threshold = alignThreshold(zoom)
+  const refs = [...collectAlignRefs(floor, [], []), ...pointAlignRefs(extraPoints)]
+  const delta = snapToAlignments([point], refs, threshold, dir, (correction) => {
+    const next = add(point, correction)
+    if (span) {
+      const projected = projectSegment(next, span.a, span.b)
+      if (projected.distance > 0.75 || projected.t <= 0.002 || projected.t >= 0.998) return false
+    }
+    const nextDist = dist(next, anchor)
+    const fromDist = dist(point, anchor)
+    if (nextDist + 0.25 < fromDist && nextDist <= threshold) return false
+    for (const id of avoidVertexIds) {
+      const vertex = floor.vertices.find((item) => item.id === id)
+      if (vertex && dist(next, vertex) <= 0.5) return false
+    }
+    return true
+  })
+  const moved = add(point, delta)
+  const adopted = adoptGeometry(floor, moved, anchor, new Set(avoidVertexIds))
+  if (adopted) return adopted
+  if (end.splitWallId && span) {
+    const projected = projectSegment(moved, span.a, span.b)
+    return { x: projected.point.x, y: projected.point.y, splitWallId: end.splitWallId }
+  }
+  return { x: moved.x, y: moved.y }
+}
+
+function adoptGeometry(floor: Floor, point: Point, anchor: Point, avoid: Set<string>): SegmentEnd | null {
+  for (const vertex of floor.vertices) {
+    if (avoid.has(vertex.id) || dist(vertex, anchor) <= 0.05) continue
+    if (dist(point, vertex) <= 0.05) return { x: vertex.x, y: vertex.y, vertexId: vertex.id }
+  }
+  for (const wall of floor.walls) {
+    const ends = wallEnds(floor, wall)
+    if (!ends) continue
+    const projected = projectSegment(point, ends.a, ends.b)
+    if (projected.distance <= 0.05 && projected.t > 0.001 && projected.t < 0.999) {
+      return { x: projected.point.x, y: projected.point.y, splitWallId: wall.id }
+    }
+  }
+  return null
 }
 
 export type Guide = { a: Point; b: Point }

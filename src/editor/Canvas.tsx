@@ -7,6 +7,14 @@ import { formatLength } from '../geometry/formatLength'
 import { add, dist, interiorPoint, left, mul, norm, pointInPolygon, pointInRegion, projectSegment, sub } from '../geometry/math'
 import { safeOffset } from '../geometry/polygon'
 import {
+  collectAlignRefs,
+  geometryProbes,
+  matchAlignGuides,
+  objectProbes,
+  pointAlignRefs,
+  type AlignGuide,
+} from '../geometry/align'
+import {
   alignmentGuides,
   computePreview,
   incidentWallIds,
@@ -14,6 +22,7 @@ import {
   lengthLabel,
   type Preview,
 } from '../geometry/preview'
+import { OBJECTS } from '../objects/catalog'
 import { roomFill, roomInk, theme } from '../theme'
 import type { Floor, Point } from '../types'
 import { wallEnds, wallGraphics, wallLengthOf } from '../geometry/walls'
@@ -74,6 +83,7 @@ export function Canvas(props: {
   const ghostGraphics = ghost ? wallGraphics(ghost, props.editing) : null
   const preview = livePreview(state)
   const labels = moveLabels(state, floor)
+  const smart = smartOverlay(state, floor, preview)
   const guides =
     state.gesture?.type === 'move-vertex'
       ? alignmentGuides(floor, [state.gesture.id], zoom)
@@ -352,6 +362,7 @@ export function Canvas(props: {
           />
         ))}
         {preview && preview.length > 1e-3 && <PreviewShape preview={preview} zoom={zoom} />}
+        <SmartGuides guides={smart} zoom={zoom} />
         {[
           ...labels,
           ...(selectedWallLabel(state, floor, props.editing) ? [selectedWallLabel(state, floor, props.editing)!] : []),
@@ -451,6 +462,76 @@ function PreviewShape(props: { preview: Preview; zoom: number }) {
       )}
     </g>
   )
+}
+
+function SmartGuides(props: { guides: AlignGuide[]; zoom: number }) {
+  const { guides, zoom } = props
+  if (guides.length === 0) return null
+  return (
+    <g pointerEvents="none">
+      {guides.map((guide, index) => {
+        const across = guide.axis === 'y'
+        const x1 = across ? guide.from : guide.value
+        const x2 = across ? guide.to : guide.value
+        const y1 = across ? guide.value : guide.from
+        const y2 = across ? guide.value : guide.to
+        return (
+          <g key={`smart${index}`}>
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={theme.canvas} strokeWidth={3.2 / zoom} />
+            <line
+              x1={x1}
+              y1={y1}
+              x2={x2}
+              y2={y2}
+              stroke={theme.smart}
+              strokeWidth={1.25 / zoom}
+              strokeDasharray={`${5 / zoom} ${4 / zoom}`}
+            />
+          </g>
+        )
+      })}
+    </g>
+  )
+}
+
+function smartOverlay(state: EditorState, floor: Floor, preview: Preview | null): AlignGuide[] {
+  const zoom = state.view.zoom
+  if (state.placing?.dragging) {
+    const spec = OBJECTS[state.placing.kind]
+    return matchAlignGuides(
+      objectProbes({
+        x: state.placing.x,
+        y: state.placing.y,
+        rotation: 0,
+        length: spec.length,
+        width: spec.width,
+      }),
+      collectAlignRefs(floor, [], []),
+      zoom,
+    )
+  }
+  const gesture = state.gesture
+  if (gesture?.type === 'move-object') {
+    const object = floor.objects.find((item) => item.id === gesture.id)
+    if (!object) return []
+    return matchAlignGuides(objectProbes(object), collectAlignRefs(floor, [], [object.id]), zoom)
+  }
+  if (gesture?.type === 'move-vertex') return guidesForVertices(floor, [gesture.id], zoom)
+  if (gesture?.type === 'move-wall') return guidesForVertices(floor, wallVertexIds(floor, gesture.id), zoom)
+  if (gesture?.type === 'move-room') return guidesForVertices(floor, gesture.vertexIds, zoom)
+  if (preview && preview.length * zoom >= 8) {
+    const refs = [
+      ...collectAlignRefs(floor, [], []),
+      ...pointAlignRefs([preview.start, ...(state.chain ?? [])]),
+    ]
+    return matchAlignGuides([preview.end], refs, zoom)
+  }
+  return []
+}
+
+function guidesForVertices(floor: Floor, vertexIds: string[], zoom: number): AlignGuide[] {
+  if (vertexIds.length === 0) return []
+  return matchAlignGuides(geometryProbes(floor, vertexIds), collectAlignRefs(floor, vertexIds, []), zoom)
 }
 
 function livePreview(state: EditorState): Preview | null {

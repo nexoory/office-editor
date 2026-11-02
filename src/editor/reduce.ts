@@ -32,11 +32,19 @@ import {
   type OpeningFrac,
   type SegmentEnd,
 } from '../document'
+import {
+  alignThreshold,
+  collectAlignRefs,
+  geometryProbes,
+  objectProbes,
+  snapToAlignments,
+  translateProbes,
+} from '../geometry/align'
 import { layoutOk, movedWallIds } from '../geometry/collide'
 import { analyze, sameIds } from '../geometry/faces'
 import { hitMatchesSelection, hitTest, type Hit } from '../geometry/hitTest'
 import { interiorPoint, pointInPolygon } from '../geometry/math'
-import { constrainAngle, left, lerp, mul, norm, sub } from '../geometry/math'
+import { add, constrainAngle, left, lerp, mul, norm, projectSegment, sub } from '../geometry/math'
 import {
   addChair,
   addObjectTag,
@@ -62,9 +70,10 @@ import {
   setOpeningKind,
   setRoomIcon,
 } from '../objects/edit'
+import { OBJECTS } from '../objects/catalog'
 import { localToWorld, nearestOnContour, resizedFrame, worldToLocal } from '../objects/placement'
 import { anchorAt, computePreview, incidentWallIds } from '../geometry/preview'
-import { snapPoint } from '../geometry/snap'
+import { snapPoint, type SnapHit } from '../geometry/snap'
 import { wallEnds } from '../geometry/walls'
 import { pushSnap, takeSnap, type HistorySnap } from '../history'
 import type { Access, Document, DoorSide, Floor, Hinge, ObjectKind, OpeningKind, Point, Selection, StairDirection, View } from '../types'
@@ -709,8 +718,16 @@ function dragVertex(state: EditorState, cursor: Point, shift: boolean): EditorSt
     excludeWallIds: incidentWallIds(gesture.floor, gesture.id),
     ray,
   })
-  if (snapped.snap.kind !== 'free') {
+  if (snapped.snap.kind === 'wall') {
+    const aligned = alignAlongWall(gesture.floor, snapped.snap, [gesture.id], state.view.zoom)
+    const point = vertexMove(gesture.floor, gesture.id, aligned, gesture.fractions) ? aligned : snapped.snap.point
+    if (vertexMove(gesture.floor, gesture.id, point, gesture.fractions)) desired = point
+  } else if (snapped.snap.kind !== 'free') {
     const point = snapped.snap.point
+    if (vertexMove(gesture.floor, gesture.id, point, gesture.fractions)) desired = point
+  } else {
+    const dir = shift && ray ? { x: Math.cos(ray.angle), y: Math.sin(ray.angle) } : null
+    const point = alignDragPoint(gesture.floor, desired, [gesture.id], state.view.zoom, dir)
     if (vertexMove(gesture.floor, gesture.id, point, gesture.fractions)) desired = point
   }
   const t = settle((amount) => !!vertexMove(gesture.floor, gesture.id, lerp(gesture.origin, desired, amount), gesture.fractions))
@@ -726,11 +743,21 @@ function dragWall(state: EditorState, cursor: Point, shift: boolean): EditorStat
   const ends = wall && wallEnds(gesture.floor, wall)
   if (!wall || !ends) return state
   let delta = sub(cursor, gesture.origin)
+  const normal = left(norm(sub(ends.b, ends.a)))
   if (shift) {
-    const normal = left(norm(sub(ends.b, ends.a)))
     const amount = delta.x * normal.x + delta.y * normal.y
     delta = mul(normal, amount)
   }
+  delta = alignDragDelta(
+    gesture.floor,
+    translateProbes(geometryProbes(gesture.floor, [wall.a, wall.b]), delta),
+    [wall.a, wall.b],
+    [],
+    state.view.zoom,
+    shift ? normal : null,
+    delta,
+    (correction) => !!wallMove(gesture.floor, gesture.id, add(delta, correction), gesture.fractions),
+  )
   const t = settle((amount) => !!wallMove(gesture.floor, gesture.id, mul(delta, amount), gesture.fractions))
   const floor = wallMove(gesture.floor, gesture.id, mul(delta, t), gesture.fractions) ?? gesture.floor
   return paint(state, floor)
@@ -740,7 +767,17 @@ function dragRoom(state: EditorState, cursor: Point, shift: boolean): EditorStat
   const gesture = state.gesture
   if (gesture?.type !== 'move-room') return state
   const raw = sub(cursor, gesture.origin)
-  const delta = shift ? (Math.abs(raw.x) >= Math.abs(raw.y) ? { x: raw.x, y: 0 } : { x: 0, y: raw.y }) : raw
+  let delta = shift ? (Math.abs(raw.x) >= Math.abs(raw.y) ? { x: raw.x, y: 0 } : { x: 0, y: raw.y }) : raw
+  delta = alignDragDelta(
+    gesture.floor,
+    translateProbes(geometryProbes(gesture.floor, gesture.vertexIds), delta),
+    gesture.vertexIds,
+    [],
+    state.view.zoom,
+    shiftDir(delta, shift),
+    delta,
+    (correction) => !!roomMove(gesture.floor, gesture.vertexIds, add(delta, correction), gesture.fractions),
+  )
   const t = settle((amount) => !!roomMove(gesture.floor, gesture.vertexIds, mul(delta, amount), gesture.fractions))
   const floor = roomMove(gesture.floor, gesture.vertexIds, mul(delta, t), gesture.fractions) ?? gesture.floor
   return paint(state, floor)
@@ -751,11 +788,62 @@ function axisDelta(raw: Point, shift: boolean): Point {
   return Math.abs(raw.x) >= Math.abs(raw.y) ? { x: raw.x, y: 0 } : { x: 0, y: raw.y }
 }
 
+function shiftDir(delta: Point, shift: boolean): Point | null {
+  if (!shift) return null
+  return delta.x === 0 && delta.y !== 0 ? { x: 0, y: 1 } : { x: 1, y: 0 }
+}
+
+function alignDragPoint(floor: Floor, point: Point, excludeVertexIds: string[], zoom: number, dir: Point | null): Point {
+  const delta = snapToAlignments([point], collectAlignRefs(floor, excludeVertexIds, []), alignThreshold(zoom), dir)
+  return add(point, delta)
+}
+
+function alignAlongWall(floor: Floor, snap: Extract<SnapHit, { kind: 'wall' }>, excludeVertexIds: string[], zoom: number): Point {
+  const wall = floor.walls.find((item) => item.id === snap.wallId)
+  const ends = wall && wallEnds(floor, wall)
+  if (!wall || !ends) return snap.point
+  const delta = snapToAlignments([snap.point], collectAlignRefs(floor, excludeVertexIds, []), alignThreshold(zoom), norm(sub(ends.b, ends.a)), (correction) => {
+    const next = add(snap.point, correction)
+    const projected = projectSegment(next, ends.a, ends.b)
+    return projected.distance <= 0.75 && projected.t > 0.002 && projected.t < 0.998
+  })
+  return add(snap.point, delta)
+}
+
+function alignDragDelta(
+  floor: Floor,
+  probes: Point[],
+  excludeVertexIds: string[],
+  excludeObjectIds: string[],
+  zoom: number,
+  dir: Point | null,
+  base: Point,
+  allow: (correction: Point) => boolean,
+): Point {
+  const correction = snapToAlignments(
+    probes,
+    collectAlignRefs(floor, excludeVertexIds, excludeObjectIds),
+    alignThreshold(zoom),
+    dir,
+    allow,
+  )
+  return add(base, correction)
+}
+
 function dragObject(state: EditorState, cursor: Point, shift: boolean): EditorState {
   const gesture = state.gesture
   if (gesture?.type !== 'move-object') return state
   const delta = axisDelta(sub(cursor, gesture.origin), shift)
-  return paint(state, moveObjectTo(gesture.floor, gesture.id, gesture.start.x + delta.x, gesture.start.y + delta.y))
+  const object = gesture.floor.objects.find((item) => item.id === gesture.id)
+  if (!object) return state
+  const at = { ...object, x: gesture.start.x + delta.x, y: gesture.start.y + delta.y }
+  const correction = snapToAlignments(
+    objectProbes(at),
+    collectAlignRefs(gesture.floor, [], [object.id]),
+    alignThreshold(state.view.zoom),
+    shiftDir(delta, shift),
+  )
+  return paint(state, moveObjectTo(gesture.floor, gesture.id, at.x + correction.x, at.y + correction.y))
 }
 
 function beginResize(state: EditorState, origin: Point): EditorState {
@@ -1003,7 +1091,14 @@ export function movePlace(state: EditorState, sx: number, sy: number): EditorSta
   if (!placing) return state
   const dragging = placing.dragging || Math.hypot(sx - placing.originX, sy - placing.originY) >= DRAG_THRESHOLD_PX
   const world = screenToWorld(state.view, sx, sy)
-  return { ...state, placing: { ...placing, x: world.x, y: world.y, dragging } }
+  const spec = OBJECTS[placing.kind]
+  const correction = snapToAlignments(
+    objectProbes({ x: world.x, y: world.y, rotation: 0, length: spec.length, width: spec.width }),
+    collectAlignRefs(activeFloor(state), [], []),
+    alignThreshold(state.view.zoom),
+    null,
+  )
+  return { ...state, placing: { ...placing, x: world.x + correction.x, y: world.y + correction.y, dragging } }
 }
 
 export function cancelPlace(state: EditorState): EditorState {

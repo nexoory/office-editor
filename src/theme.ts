@@ -15,6 +15,8 @@ export const theme = {
   label: '#2c2a26',
   labelHalo: '#f4f2ec',
   guide: '#c4a15a',
+  /** Ось, на которой совпали точки или кромки. */
+  smart: '#c4533a',
   snap: '#3d7ea6',
   close: '#2f8f62',
   align: '#3d8f8a',
