@@ -1,15 +1,17 @@
+import { faChevronDown, faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FaIcon } from '../objects/faIcon'
 import { QUICK_ICONS } from '../objects/icons'
 import { findIcon, searchIcons, type IconChoice } from '../objects/iconList'
+import { Glyph } from './Glyph'
 
 function IconThumb(props: { name: string | null; size?: number }) {
   const icon = findIcon(props.name ?? undefined)
-  const size = props.size ?? 22
+  const size = props.size ?? 16
   if (!icon) return null
   return (
     <svg width={size} height={size} viewBox={`${-size / 2} ${-size / 2} ${size} ${size}`} aria-hidden="true">
-      <FaIcon icon={icon} size={size * 0.86} color="currentColor" />
+      <FaIcon icon={icon} size={size * 0.9} color="currentColor" />
     </svg>
   )
 }
@@ -21,29 +23,26 @@ function quickChoices(): IconChoice[] {
   })
 }
 
-export function IconPicker(props: {
+function IconPicker(props: {
   name: string | null
   onChange: (name: string | null) => void
   onFocus: (focused: boolean) => void
   resetLabel?: string
-  autoFocus?: boolean
 }) {
   const [query, setQuery] = useState('')
   const input = useRef<HTMLInputElement>(null)
   const matches = useMemo(() => (query.trim() ? searchIcons(query) : quickChoices()), [query])
+  const onFocus = useRef(props.onFocus)
+  onFocus.current = props.onFocus
   useEffect(() => {
-    if (props.autoFocus) input.current?.focus()
-  }, [props.autoFocus])
-  const choose = (name: string | null) => {
-    props.onChange(name)
-    setQuery('')
-  }
+    input.current?.focus()
+    // Поиск закрывается выбором, пока в нём фокус: blur при удалении узла приходит не везде.
+    return () => onFocus.current(false)
+  }, [])
   return (
     <div className="icon-picker">
-      <div className="icon-picker-row">
-        <span className="icon-picker-current">
-          <IconThumb name={props.name} />
-        </span>
+      <span className="input input-search">
+        <Glyph icon={faMagnifyingGlass} size={11} />
         <input
           ref={input}
           aria-label="Поиск иконки"
@@ -55,27 +54,16 @@ export function IconPicker(props: {
           onKeyDown={(event) => {
             if (event.key === 'Enter' && matches[0]) {
               event.preventDefault()
-              choose(matches[0].name)
+              props.onChange(matches[0].name)
             } else if (event.key === 'Escape') {
               event.preventDefault()
               event.stopPropagation()
-              setQuery('')
+              if (query) setQuery('')
+              else props.onChange(props.name)
             }
           }}
         />
-      </div>
-      {props.resetLabel && (
-        <button
-          type="button"
-          className="text-button"
-          onMouseDown={(event) => {
-            event.preventDefault()
-            choose(null)
-          }}
-        >
-          {props.resetLabel}
-        </button>
-      )}
+      </span>
       <div className="icon-picker-list" role="listbox" aria-label="Иконки">
         {matches.length === 0 && <p className="icon-picker-empty">Ничего не найдено</p>}
         {matches.map((choice) => (
@@ -88,13 +76,57 @@ export function IconPicker(props: {
             title={choice.name}
             onMouseDown={(event) => {
               event.preventDefault()
-              choose(choice.name)
+              props.onChange(choice.name)
             }}
           >
-            <IconThumb name={choice.name} size={18} />
+            <IconThumb name={choice.name} />
           </button>
         ))}
       </div>
+      {props.resetLabel && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-small"
+          onMouseDown={(event) => {
+            event.preventDefault()
+            props.onChange(null)
+          }}
+        >
+          {props.resetLabel}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** Текущая иконка кнопкой; поиск раскрывается под ней и закрывается выбором. */
+export function IconSelect(props: {
+  name: string | null
+  onChange: (name: string | null) => void
+  onFocus: (focused: boolean) => void
+  resetLabel?: string
+  emptyLabel?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const shown = findIcon(props.name ?? undefined) ? props.name : null
+  return (
+    <div className="icon-select">
+      <button type="button" className="btn btn-outline icon-select-button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        <span className="icon-select-current">{shown ? <IconThumb name={shown} /> : null}</span>
+        <span className="icon-select-name">{shown ?? props.emptyLabel ?? 'Нет'}</span>
+        <Glyph icon={faChevronDown} size={10} />
+      </button>
+      {open && (
+        <IconPicker
+          name={props.name}
+          resetLabel={props.resetLabel}
+          onFocus={props.onFocus}
+          onChange={(name) => {
+            setOpen(false)
+            if (name !== props.name) props.onChange(name)
+          }}
+        />
+      )}
     </div>
   )
 }

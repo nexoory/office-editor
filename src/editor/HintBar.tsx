@@ -19,6 +19,13 @@ export function hintsFor(state: EditorState, editing: boolean): Hint[] {
     return [['Shift', 'по горизонтали или вертикали'], ALT, ['Esc', 'отменить']]
   }
   if (gesture?.type === 'move-opening' || gesture?.type === 'move-chair') return [['Esc', 'отменить']]
+  if (gesture?.type === 'move-mark') return [['Shift', 'по горизонтали или вертикали'], ['Esc', 'отменить']]
+  if (gesture?.type === 'resize-mark') return [['Esc', 'отменить']]
+  if (state.decor) {
+    return state.decor.part
+      ? [['Тяните', 'переместить'], ['Угол', 'размер'], ['Стрелки', 'сдвиг'], ['Esc', 'снять выбор']]
+      : [['Клик', 'выбрать название или знак'], ['Клик вне комнаты', 'готово'], ['Enter', 'готово']]
+  }
   if (state.chain) {
     return [
       ['Клик', 'следующая точка'],

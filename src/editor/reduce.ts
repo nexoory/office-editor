@@ -45,9 +45,10 @@ import {
   translateProbes,
 } from '../geometry/align'
 import { layoutOk, movedWallIds } from '../geometry/collide'
-import { ringPoints } from '../geometry/faces'
+import { ringPoints, sameIds } from '../geometry/faces'
 import { hitGhostWall, hitTest, selectionAnchor, type Hit } from '../geometry/hitTest'
-import { dot } from '../geometry/math'
+import { dist, dot, pointInRegion } from '../geometry/math'
+import { MARK_MAX, MARK_MIN, markAt, markHandleAt, marksOf, type ResolvedMarks } from '../geometry/roomMarks'
 import { add, constrainAngle, left, lerp, mul, norm, projectSegment, sub } from '../geometry/math'
 import { handleAt, type ObjectHandle } from '../objects/handles'
 import { classifyPress, isMovableHit, type PointerInfo, type PressIntent, type Tool } from './input'
@@ -75,6 +76,7 @@ import {
   setObjectWidth,
   setOpeningKind,
   setRoomIcon,
+  setRoomMarks,
 } from '../objects/edit'
 import { OBJECTS } from '../objects/catalog'
 import { localToWorld, nearestOnContour, resizedFrame, worldToLocal } from '../objects/placement'
@@ -82,7 +84,7 @@ import { anchorAt, computePreview, incidentWallIds } from '../geometry/preview'
 import { snapPoint, type SnapHit } from '../geometry/snap'
 import { wallEnds } from '../geometry/walls'
 import { pushSnap, takeSnap, type HistorySnap } from '../history'
-import type { Access, Document, DoorSide, Floor, Hinge, ObjectKind, OpeningKind, Point, Selection, StairDirection, View } from '../types'
+import type { Access, Document, DoorSide, Floor, Hinge, LegendFilter, ObjectKind, OpeningKind, Point, RoomMark, RoomMarkPart, Selection, StairDirection, View } from '../types'
 
 export type { PointerInfo, Tool } from './input'
 
@@ -120,6 +122,8 @@ export type Gesture =
   | { type: 'rotate-object'; id: string; offset: number; floor: Floor; history: HistorySnap }
   | { type: 'resize-object'; id: string; fixed: Point; aspect: number; origin: Point; floor: Floor; history: HistorySnap }
   | { type: 'move-chair'; objectId: string; chairId: string; floor: Floor; history: HistorySnap }
+  | { type: 'move-mark'; part: RoomMarkPart; marks: ResolvedMarks; origin: Point; start: Point; floor: Floor; history: HistorySnap }
+  | { type: 'resize-mark'; part: RoomMarkPart; marks: ResolvedMarks; center: Point; reach: number; size: number; floor: Floor; history: HistorySnap }
 
 export type Placing = {
   kind: ObjectKind
@@ -148,7 +152,7 @@ export type EditorState = {
   openingWheel: { openingId: string; dir: 1 | -1; step: number; at: number; pixel: boolean } | null
   paletteOpen: boolean
   placing: Placing | null
-  legendFilter: ObjectKind | null
+  legendFilter: LegendFilter | null
   browsing: boolean
   tool: Tool
   hover: Hover | null
@@ -157,6 +161,9 @@ export type EditorState = {
   help: boolean
   /** Комната, чьё поле названия должно получить фокус; снимается, когда фокус поставлен. */
   renaming: string | null
+  /** Оформление надписей комнаты: остальной план не отвечает на указатель. */
+  decor: { roomId: string; part: RoomMarkPart | null } | null
+  decorHover: RoomMarkPart | 'handle' | null
 }
 
 export type Cursor = { x: number; y: number; shift: boolean; alt: boolean }
@@ -195,6 +202,8 @@ export function createEditorState(saved?: { document: Document; activeFloorId: s
     spaceHeld: false,
     help: false,
     renaming: null,
+    decor: null,
+    decorHover: null,
   }
 }
 
@@ -255,6 +264,7 @@ function restoreSnap(state: EditorState, snap: HistorySnap): EditorState {
     gesture: null,
     wheel: null,
     legendFilter: floor.id === state.activeFloorId ? state.legendFilter : null,
+    decor: state.decor && floor.rooms.some((room) => room.id === state.decor?.roomId) ? state.decor : null,
   }
 }
 
@@ -284,7 +294,9 @@ function abortGesture(state: EditorState): EditorState {
       gesture.type === 'move-object' ||
     gesture.type === 'rotate-object' ||
     gesture.type === 'resize-object' ||
-    gesture.type === 'move-chair')
+    gesture.type === 'move-chair' ||
+    gesture.type === 'move-mark' ||
+    gesture.type === 'resize-mark')
   ) {
     next = paint(state, gesture.floor)
   }
@@ -303,6 +315,8 @@ export function switchFloor(state: EditorState, delta: number): EditorState {
     placing: null,
     menu: null,
     hover: null,
+    decor: null,
+    decorHover: null,
   }
 }
 
@@ -357,7 +371,7 @@ export function raiseAll(state: EditorState, editing: boolean): EditorState {
 }
 
 export function deleteSelection(state: EditorState, editing: boolean): EditorState {
-  if (!editing || state.textFocused || !state.selection) return state
+  if (!editing || state.textFocused || !state.selection || state.decor) return state
   const floor = activeFloor(state)
   const selection = state.selection
   let next: Floor | null = null
@@ -530,9 +544,14 @@ export function escape(state: EditorState): EditorState {
     state.gesture?.type === 'move-object' ||
     state.gesture?.type === 'rotate-object' ||
     state.gesture?.type === 'resize-object' ||
-    state.gesture?.type === 'move-chair'
+    state.gesture?.type === 'move-chair' ||
+    state.gesture?.type === 'move-mark' ||
+    state.gesture?.type === 'resize-mark'
   ) {
     return { ...paint(state, state.gesture.floor), gesture: null, axisLock: null }
+  }
+  if (state.decor) {
+    return state.decor.part ? { ...state, decor: { ...state.decor, part: null } } : { ...state, decor: null, decorHover: null }
   }
   if (state.chain) return { ...state, chain: null, axisLock: null, gesture: null }
   if (state.selection) return { ...state, selection: null }
@@ -564,7 +583,15 @@ function roomMove(base: Floor, vertexIds: string[], delta: Point, fracs: Opening
   const ids = new Set(vertexIds)
   const next = applyFractions(translateVertices(base, ids, delta), fracs)
   if (!next || !layoutOk(base, next, movedWallIds(base, ids))) return null
-  return next
+  const shift = (mark: RoomMark | undefined) => mark && { ...mark, x: mark.x + delta.x, y: mark.y + delta.y }
+  return {
+    ...next,
+    rooms: next.rooms.map((room) =>
+      sameIds(room.vertexIds, vertexIds) && (room.title || room.badge)
+        ? { ...room, ...(room.title ? { title: shift(room.title) } : {}), ...(room.badge ? { badge: shift(room.badge) } : {}) }
+        : room,
+    ),
+  }
 }
 
 function settle(valid: (t: number) => boolean): number {
@@ -604,11 +631,12 @@ export function onPointerDown(state: EditorState, info: PointerInfo, editing: bo
     pointer: { sx: info.sx, sy: info.sy },
     cursor: { x: world.x, y: world.y, shift: info.shift, alt: info.alt },
   }
+  if (state.decor && editing) return decorPointerDown(base, info, world)
   if (info.button === 0) {
     const handle = state.spaceHeld ? null : selectedObjectHandle(state, world, editing)
     if (handle) return handle === 'rotate' ? beginRotate(base, world) : beginResize(base, world)
   }
-  const hit = hitTest(activeFloor(state), world, state.view.zoom, editing)
+  const hit = hitTest(activeFloor(state), world, state.view.zoom, editing, info.pointerType === 'touch')
   const intent = classifyPress({
     button: info.button,
     editing,
@@ -661,6 +689,8 @@ export function onPointerMove(state: EditorState, info: PointerInfo, editing: bo
   else if (next.gesture?.type === 'rotate-object') next = dragRotate(next, world, info.shift)
   else if (next.gesture?.type === 'resize-object') next = dragResize(next, world, info.shift)
   else if (next.gesture?.type === 'move-chair') next = dragChair(next, world)
+  else if (next.gesture?.type === 'move-mark') next = dragMark(next, world, info.shift)
+  else if (next.gesture?.type === 'resize-mark') next = dragMarkSize(next, world)
   if (next.chain || next.gesture?.type === 'draw') {
     const anchor = next.gesture?.type === 'draw' ? next.gesture.anchor : next.chain?.[next.chain.length - 1]
     if (anchor) {
@@ -679,7 +709,11 @@ export function onPointerMove(state: EditorState, info: PointerInfo, editing: bo
       next = { ...next, axisLock: preview.lockWallId }
     }
   }
-  if (!next.gesture && info.pointerType !== 'touch') next = { ...next, hover: hoverAt(next, world, editing) }
+  if (!next.gesture && info.pointerType !== 'touch') {
+    next = next.decor
+      ? { ...next, hover: null, decorHover: decorHoverAt(next, world) }
+      : { ...next, hover: hoverAt(next, world, editing) }
+  }
   return next
 }
 
@@ -728,6 +762,7 @@ export function pinchView(
 }
 
 function beginMove(state: EditorState, origin: Point): EditorState {
+  if (state.decor) return beginMarkMove(state, origin)
   const selection = state.selection
   const floor = activeFloor(state)
   if (!selection) return state
@@ -1073,12 +1108,21 @@ export function onPointerUp(state: EditorState, info: PointerInfo, editing: bool
     gesture.type === 'move-object' ||
     gesture.type === 'rotate-object' ||
     gesture.type === 'resize-object' ||
-    gesture.type === 'move-chair'
+    gesture.type === 'move-chair' ||
+    gesture.type === 'move-mark' ||
+    gesture.type === 'resize-mark'
   ) {
     return finishMove({ ...state, cursor }, gesture.history, gesture.floor)
   }
   if (gesture.type !== 'pending') return state
   const done: EditorState = { ...state, gesture: null, cursor }
+  if (state.decor) {
+    const marks = decorMarks(state)
+    if (gesture.intent === 'floor' && (!marks || !pointInRegion(world, marks.outer, marks.holes))) {
+      return { ...done, decor: null, decorHover: null }
+    }
+    return done
+  }
   if (gesture.intent === 'target') return done
   if (gesture.intent === 'floor') return { ...done, selection: selectionFromHit(gesture.hit, editing) }
   if (gesture.intent === 'secondary') {
@@ -1152,6 +1196,9 @@ export function cursorFor(state: EditorState, editing: boolean): string {
   if (state.spaceHeld) return 'grab'
   if (state.chain || gesture?.type === 'draw' || (editing && state.tool === 'wall')) return 'crosshair'
   if (gesture?.type === 'rotate-object' || gesture?.type === 'resize-object') return 'grabbing'
+  if (gesture?.type === 'resize-mark') return 'nwse-resize'
+  if (gesture?.type === 'move-mark') return 'move'
+  if (state.decor && !gesture) return state.decorHover === 'handle' ? 'nwse-resize' : state.decorHover ? 'move' : 'default'
   if (
     gesture?.type === 'move-vertex' ||
     gesture?.type === 'move-wall' ||
@@ -1257,10 +1304,12 @@ export function setBrowsing(state: EditorState, browsing: boolean): EditorState 
     placing: null,
     menu: null,
     hover: null,
+    decor: browsing ? null : state.decor,
+    decorHover: null,
   }
 }
 
-export function setLegendFilter(state: EditorState, kind: ObjectKind | null): EditorState {
+export function setLegendFilter(state: EditorState, kind: LegendFilter | null): EditorState {
   if (kind === null || state.legendFilter === kind) return { ...state, legendFilter: null }
   return { ...state, legendFilter: kind }
 }
@@ -1352,13 +1401,17 @@ export function panBy(state: EditorState, dx: number, dy: number): EditorState {
 }
 
 export function onDoubleClick(state: EditorState, info: { sx: number; sy: number }, editing: boolean, width: number, height: number): EditorState {
-  if (state.spaceHeld) return state
+  if (state.spaceHeld || state.decor) return state
   if (editing && state.tool === 'wall') return finishChain(state)
   const world = screenToWorld(state.view, info.sx, info.sy)
   const hit = hitTest(activeFloor(state), world, state.view.zoom, editing)
   if (hit.kind === 'room') {
     const selection: Selection = { kind: 'room', id: hit.id }
-    if (editing) return { ...state, selection, renaming: hit.id }
+    if (editing) {
+      const marks = marksOf(activeFloor(state), hit.id)
+      if (marks && markAt(marks, world, 3 / state.view.zoom)) return startDecor({ ...state, selection }, editing)
+      return { ...state, selection, renaming: hit.id }
+    }
     return { ...fitRoom(state, hit.id, width, height), selection }
   }
   if (hit.kind === 'empty') return zoomBy(state, info.sx, info.sy, 2)
@@ -1368,7 +1421,7 @@ export function onDoubleClick(state: EditorState, info: { sx: number; sy: number
 export function setTool(state: EditorState, tool: Tool, editing: boolean): EditorState {
   if (!editing || state.tool === tool) return state
   const base = abortGesture(state)
-  return { ...base, tool, selection: tool === 'wall' ? null : base.selection, menu: null, hover: null, placing: null }
+  return { ...base, tool, selection: tool === 'wall' ? null : base.selection, menu: null, hover: null, placing: null, decor: null }
 }
 
 export function setSpace(state: EditorState, held: boolean): EditorState {
@@ -1394,6 +1447,7 @@ export function renameHandled(state: EditorState): EditorState {
 export function nudgeSelection(state: EditorState, editing: boolean, dx: number, dy: number): EditorState {
   const selection = state.selection
   if (!editing || state.textFocused || state.gesture || !selection) return state
+  if (state.decor) return nudgeMark(state, dx, dy)
   const floor = activeFloor(state)
   const delta = { x: dx, y: dy }
   let next: Floor | null = null
@@ -1520,6 +1574,146 @@ export function changeRoomIcon(state: EditorState, editing: boolean, roomId: str
     if (!room || (room.icon === icon && room.symbol === undefined)) return null
     return setRoomIcon(floor, roomId, icon)
   })
+}
+
+/** Режим оформления: название и знак выбранной комнаты двигаются и меняют размер. */
+export function startDecor(state: EditorState, editing: boolean): EditorState {
+  if (!editing || state.selection?.kind !== 'room') return state
+  const marks = marksOf(activeFloor(state), state.selection.id)
+  if (!marks || (!marks.title && !marks.badge)) return state
+  return {
+    ...abortGesture(state),
+    decor: { roomId: state.selection.id, part: null },
+    decorHover: null,
+    menu: null,
+    hover: null,
+    tool: 'select',
+    placing: null,
+    paletteOpen: false,
+    renaming: null,
+  }
+}
+
+export function endDecor(state: EditorState): EditorState {
+  return state.decor ? { ...abortGesture(state), decor: null, decorHover: null } : state
+}
+
+export function changeMarkSize(state: EditorState, editing: boolean, part: RoomMarkPart, size: number): EditorState {
+  const marks = decorMarks(state)
+  const mark = marks?.[part]
+  if (!marks || !mark) return state
+  const next = Math.round(Math.max(MARK_MIN, Math.min(MARK_MAX, size)))
+  return editFloor(state, editing, (floor) => withMark(floor, marks, part, { ...mark, size: next }))
+}
+
+export function resetMarks(state: EditorState, editing: boolean): EditorState {
+  const decor = state.decor
+  if (!decor) return state
+  return editFloor(state, editing, (floor) => setRoomMarks(floor, decor.roomId, null))
+}
+
+function decorMarks(state: EditorState): ResolvedMarks | null {
+  return state.decor ? marksOf(activeFloor(state), state.decor.roomId) : null
+}
+
+/** Правка одной надписи записывает обе: вторая больше не следует за умолчаниями. */
+function withMark(floor: Floor, marks: ResolvedMarks, part: RoomMarkPart, mark: RoomMark): Floor {
+  return setRoomMarks(floor, marks.roomId, {
+    title: part === 'title' ? mark : marks.title,
+    badge: part === 'badge' ? mark : marks.badge,
+  })
+}
+
+function decorPointerDown(state: EditorState, info: PointerInfo, world: Point): EditorState {
+  const decor = state.decor
+  const marks = decorMarks(state)
+  if (!decor || !marks) return { ...state, decor: null, decorHover: null }
+  if (info.button !== 0 || state.spaceHeld) return { ...state, hover: null, gesture: { type: 'pan', sx: info.sx, sy: info.sy } }
+  const touch = info.pointerType === 'touch'
+  const zoom = state.view.zoom
+  const empty: Hit = { kind: 'empty' }
+  if (decor.part) {
+    const mark = marks[decor.part]
+    const corner = markHandleAt(marks, decor.part, world, (touch ? 16 : 8) / zoom)
+    if (mark && corner) {
+      return {
+        ...state,
+        gesture: {
+          type: 'resize-mark',
+          part: decor.part,
+          marks,
+          center: { x: mark.x, y: mark.y },
+          reach: Math.max(dist(corner, mark), 1),
+          size: mark.size,
+          floor: activeFloor(state),
+          history: takeSnap(state.document, state.activeFloorId),
+        },
+      }
+    }
+  }
+  const part = markAt(marks, world, (touch ? 8 : 3) / zoom)
+  return {
+    ...state,
+    decor: { ...decor, part },
+    gesture: { type: 'pending', intent: part ? 'target' : 'floor', sx: info.sx, sy: info.sy, hit: empty },
+  }
+}
+
+function decorHoverAt(state: EditorState, world: Point): EditorState['decorHover'] {
+  const marks = decorMarks(state)
+  if (!marks || state.spaceHeld) return null
+  const zoom = state.view.zoom
+  if (state.decor?.part && markHandleAt(marks, state.decor.part, world, 8 / zoom)) return 'handle'
+  return markAt(marks, world, 3 / zoom)
+}
+
+function beginMarkMove(state: EditorState, origin: Point): EditorState {
+  const part = state.decor?.part
+  const marks = decorMarks(state)
+  const mark = part && marks?.[part]
+  if (!part || !marks || !mark) return state
+  return {
+    ...state,
+    gesture: {
+      type: 'move-mark',
+      part,
+      marks,
+      origin,
+      start: { x: mark.x, y: mark.y },
+      floor: activeFloor(state),
+      history: takeSnap(state.document, state.activeFloorId),
+    },
+  }
+}
+
+/** Середина надписи не уходит с пола комнаты; края могут выходить и обрезаются. */
+function dragMark(state: EditorState, cursor: Point, shift: boolean): EditorState {
+  const gesture = state.gesture
+  if (gesture?.type !== 'move-mark') return state
+  const mark = gesture.marks[gesture.part]
+  if (!mark) return state
+  const at = add(gesture.start, axisDelta(sub(cursor, gesture.origin), shift))
+  if (!pointInRegion(at, gesture.marks.outer, gesture.marks.holes)) return state
+  return paint(state, withMark(gesture.floor, gesture.marks, gesture.part, { ...mark, x: Math.round(at.x), y: Math.round(at.y) }))
+}
+
+function dragMarkSize(state: EditorState, cursor: Point): EditorState {
+  const gesture = state.gesture
+  if (gesture?.type !== 'resize-mark') return state
+  const mark = gesture.marks[gesture.part]
+  if (!mark) return state
+  const size = Math.round(Math.max(MARK_MIN, Math.min(MARK_MAX, (gesture.size * dist(cursor, gesture.center)) / gesture.reach)))
+  return paint(state, withMark(gesture.floor, gesture.marks, gesture.part, { ...mark, size }))
+}
+
+function nudgeMark(state: EditorState, dx: number, dy: number): EditorState {
+  const part = state.decor?.part
+  const marks = decorMarks(state)
+  const mark = part && marks?.[part]
+  if (!part || !marks || !mark) return state
+  const at = { x: mark.x + dx, y: mark.y + dy }
+  if (!pointInRegion(at, marks.outer, marks.holes)) return state
+  return finishWheel(state, paint(state, withMark(activeFloor(state), marks, part, { ...mark, ...at })), `nudge:mark:${part}`, NUDGE_SERIES_MS)
 }
 
 export function changeWallPartition(state: EditorState, editing: boolean, wallId: string, partition: boolean): EditorState {

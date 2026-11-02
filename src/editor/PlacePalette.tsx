@@ -1,7 +1,7 @@
 import { useRef, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { faPlus } from '@fortawesome/free-solid-svg-icons'
-import { OBJECT_ORDER, objectName } from '../objects/catalog'
-import { TypeMark } from '../objects/signs'
+import { CATEGORY_NAME, CATEGORY_ORDER, OBJECT_CATEGORY, OBJECT_ORDER, objectName } from '../objects/catalog'
+import { kindLook, MarkerIcon } from '../objects/markers'
 import { Glyph } from './Glyph'
 import type { ObjectKind } from '../types'
 
@@ -46,46 +46,55 @@ export function PlacePalette(props: {
         <Glyph icon={faPlus} />
       </button>
       {props.open && (
-        <div ref={menuRef} className="place-menu" role="listbox" aria-label="Типы предметов">
-          <div className="type-list">
-            {OBJECT_ORDER.map((kind) => (
-              <button
-                key={kind}
-                type="button"
-                className="type-button"
-                onPointerDown={(event) => {
-                  if (event.button !== 0) return
-                  event.preventDefault()
-                  activePointer.current = event.pointerId
-                  const point = locate(event)
-                  try {
-                    event.currentTarget.setPointerCapture(event.pointerId)
-                  } catch {
-                    // Захват нужен, чтобы жест доехал за кнопку. Без него отпускание всё равно ставит предмет.
-                  }
-                  props.onBegin(kind, point.sx, point.sy)
-                }}
-                onPointerMove={(event) => {
-                  if (activePointer.current !== event.pointerId) return
-                  const point = locate(event)
-                  props.onMove(point.sx, point.sy, event.altKey)
-                }}
-                onPointerUp={(event) => {
-                  if (activePointer.current !== event.pointerId) return
-                  activePointer.current = null
-                  const point = locate(event)
-                  props.onEnd(point.over, point.width, point.height)
-                }}
-                onPointerCancel={() => {
-                  activePointer.current = null
-                  props.onCancel()
-                }}
-              >
-                <TypeMark kind={kind} box={30} />
-                <span>{objectName(kind)}</span>
-              </button>
-            ))}
-          </div>
+        <div ref={menuRef} className="panel place-menu" role="listbox" aria-label="Типы предметов">
+          {CATEGORY_ORDER.map((category) => {
+            const kinds = OBJECT_ORDER.filter((kind) => OBJECT_CATEGORY[kind] === category)
+            if (kinds.length === 0) return null
+            return (
+              <section key={category} className="place-group">
+                <h3 className="group-title">{CATEGORY_NAME[category]}</h3>
+                <div className="type-list">
+                  {kinds.map((kind) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      className="type-button"
+                      onPointerDown={(event) => {
+                        if (event.button !== 0) return
+                        event.preventDefault()
+                        activePointer.current = event.pointerId
+                        const point = locate(event)
+                        try {
+                          event.currentTarget.setPointerCapture(event.pointerId)
+                        } catch {
+                          // Захват нужен, чтобы жест доехал за кнопку. Без него отпускание всё равно ставит предмет.
+                        }
+                        props.onBegin(kind, point.sx, point.sy)
+                      }}
+                      onPointerMove={(event) => {
+                        if (activePointer.current !== event.pointerId) return
+                        const point = locate(event)
+                        props.onMove(point.sx, point.sy, event.altKey)
+                      }}
+                      onPointerUp={(event) => {
+                        if (activePointer.current !== event.pointerId) return
+                        activePointer.current = null
+                        const point = locate(event)
+                        props.onEnd(point.over, point.width, point.height)
+                      }}
+                      onPointerCancel={() => {
+                        activePointer.current = null
+                        props.onCancel()
+                      }}
+                    >
+                      <MarkerIcon look={kindLook(kind)} size={28} />
+                      <span>{objectName(kind)}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )
+          })}
         </div>
       )}
     </>

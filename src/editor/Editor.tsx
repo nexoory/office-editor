@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { KEY_PAN_PX } from '../constants'
 import { Canvas } from './Canvas'
 import { ContextMenu, type ContextMenuActions } from './ContextMenu'
-import { FloorSwitcher } from './FloorSwitcher'
+import { faKeyboard } from '@fortawesome/free-solid-svg-icons'
+import { FloorLabel, FloorLift } from './FloorSwitcher'
 import { HintBar } from './HintBar'
 import { Inspector, type InspectorActions } from './Inspector'
 import { Legend } from './Legend'
@@ -10,6 +11,9 @@ import { PlacePalette } from './PlacePalette'
 import { ShortcutsHelp } from './ShortcutsHelp'
 import { Toolbar } from './Toolbar'
 import { ViewControls } from './ViewControls'
+import { IconButton } from './ui/Button'
+import { COMPACT_QUERY, useMedia } from './ui/media'
+import { Segmented } from './ui/Segmented'
 import {
   activeFloor,
   addFloor,
@@ -31,6 +35,7 @@ import {
   changeObjectWidth,
   changeOpeningKind,
   changeOpeningWidth,
+  changeMarkSize,
   changeRoomIcon,
   changeWallPartition,
   changeWallThickness,
@@ -39,6 +44,7 @@ import {
   createOpening,
   deleteSelection,
   duplicateSelection,
+  endDecor,
   endPlace,
   escape,
   finishChain,
@@ -64,6 +70,7 @@ import {
   redo,
   renameHandled,
   requestRename,
+  resetMarks,
   rotateSelection,
   selectChair,
   setBrowsing,
@@ -74,6 +81,7 @@ import {
   setSpace,
   setTool,
   showRoom,
+  startDecor,
   switchFloor,
   toggleHelp,
   togglePalette,
@@ -100,6 +108,7 @@ export function Editor({ editing }: { editing: boolean }) {
   const editingRef = useRef(editing)
   const stateRef = useRef(state)
   const canEdit = editing && !state.browsing
+  const compact = useMedia(COMPACT_QUERY)
   editingRef.current = canEdit
   stateRef.current = state
 
@@ -181,6 +190,7 @@ export function Editor({ editing }: { editing: boolean }) {
       if (event.key === 'Enter') {
         const current = stateRef.current
         if (current.chain || current.gesture?.type === 'draw') return handled(finishChain)
+        if (current.decor) return handled(endDecor)
         if (current.selection?.kind === 'room') return handled((value) => requestRename(value, editingRef.current))
         return
       }
@@ -226,11 +236,28 @@ export function Editor({ editing }: { editing: boolean }) {
       current.selection?.kind === kind ? change(current, edit, current.selection as Extract<Selection, { kind: K }>) : current,
     )
 
+  /** Плавный сдвиг холста по вертикали: выбор выходит из-под шторки. */
+  const reveal = (dy: number) => {
+    const start = performance.now()
+    let done = 0
+    const step = (now: number) => {
+      const k = Math.min(1, (now - start) / 220)
+      const target = dy * (1 - (1 - k) ** 3)
+      const delta = target - done
+      done = target
+      setState((current) => panBy(current, 0, delta))
+      if (k < 1) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  }
+
   const inspectorActions: InspectorActions = {
     onTextFocus: focus,
     onDelete: () => update(deleteSelection),
     onCopy: () => update(duplicateSelection),
     onRotate: () => update((current, edit) => rotateSelection(current, edit, 1)),
+    onClose: () => setState((current) => ({ ...current, selection: null })),
+    onReveal: (dy) => reveal(dy),
     onThickness: (value) => onSelected('wall', (current, edit, selection) => changeWallThickness(current, edit, selection.id, value)),
     onThicknessWheel: (deltaY) =>
       onSelected('wall', (current, edit, selection) => wheelWallThickness(current, edit, selection.id, deltaY)),
@@ -248,6 +275,10 @@ export function Editor({ editing }: { editing: boolean }) {
     onRename: (name) => onSelected('room', (current, edit, selection) => setRoomName(current, edit, selection.id, name)),
     onRoomColor: (color) => onSelected('room', (current, edit, selection) => setRoomColor(current, edit, selection.id, color)),
     onRoomIcon: (icon) => onSelected('room', (current, edit, selection) => changeRoomIcon(current, edit, selection.id, icon)),
+    onDecor: () => update(startDecor),
+    onDecorDone: () => setState(endDecor),
+    onMarkSize: (part, size) => update((current, edit) => changeMarkSize(current, edit, part, size)),
+    onMarkReset: () => update(resetMarks),
     onNote: (id, note) => update((current, edit) => changeObjectNote(current, edit, id, note)),
     onAddTag: (id, tag) => update((current, edit) => changeObjectTag(current, edit, id, tag)),
     onRemoveTag: (id, tag) => update((current, edit) => changeObjectUntag(current, edit, id, tag)),
@@ -268,6 +299,7 @@ export function Editor({ editing }: { editing: boolean }) {
     onRaiseAll: () => update(raiseAll),
     onRaiseGhost: () => update(menuRaiseGhost),
     onRename: () => update(requestRename),
+    onDecor: () => update((current, edit) => closeMenu(startDecor(current, edit))),
     onDelete: () => update((current, edit) => closeMenu(deleteSelection(current, edit))),
     onAddOpening: (kind) => update((current, edit) => menuAddOpening(current, edit, kind)),
     onSplit: () => update(menuSplitWall),
@@ -300,13 +332,43 @@ export function Editor({ editing }: { editing: boolean }) {
           onPinch={(info) => update((current) => pinchView(current, info))}
           onWheel={wheel}
         />
-        <FloorSwitcher
+        <div className="topbar">
+          <FloorLabel floors={state.document.floors} floor={floor} />
+          {!canEdit && (
+            <Legend
+              floor={floor}
+              filter={state.legendFilter}
+              compact={compact}
+              onFilter={(kind) => setState((current) => setLegendFilter(current, kind))}
+              onRoom={(roomId) => {
+                const size = stageSize()
+                setState((current) => showRoom(current, roomId, size.width, size.height))
+              }}
+            />
+          )}
+          <div className="topbar-end">
+            {editing && (
+              <div className="panel mode-switch">
+                <Segmented
+                  label="Режим"
+                  value={state.browsing ? 'view' : 'edit'}
+                  options={[
+                    { value: 'view', label: 'Просмотр' },
+                    { value: 'edit', label: 'Редактирование' },
+                  ]}
+                  onChange={(mode) => setState((current) => setBrowsing(current, mode === 'view'))}
+                />
+              </div>
+            )}
+            <div className="panel help-button">
+              <IconButton icon={faKeyboard} label="Клавиши" title="Клавиши — ?" onClick={() => setState((current) => toggleHelp(current))} />
+            </div>
+          </div>
+        </div>
+        <FloorLift
           floors={state.document.floors}
           floor={floor}
           editing={canEdit}
-          shellEditing={editing}
-          browsing={state.browsing}
-          onBrowse={(browsing) => setState((current) => setBrowsing(current, browsing))}
           onSwitch={(delta) => setState((current) => switchFloor(current, delta))}
           onAdd={(delta) => update((current, edit) => addFloor(current, edit, delta))}
         />
@@ -316,14 +378,16 @@ export function Editor({ editing }: { editing: boolean }) {
             selection={state.selection}
             view={state.view}
             editing={canEdit}
+            sheet={compact && !canEdit}
             renaming={state.renaming}
+            decor={canEdit ? state.decor : null}
             actions={inspectorActions}
           />
         )}
         {state.menu && canEdit && (
           <ContextMenu menu={state.menu} floor={floor} hasGhost={!!ghostFloor(state)} actions={menuActions} />
         )}
-        {canEdit && (
+        {canEdit && !state.decor && (
           <Toolbar tool={state.tool} onTool={(tool) => update((current, edit) => setTool(current, tool, edit))}>
             <PlacePalette
               open={state.paletteOpen}
@@ -346,17 +410,6 @@ export function Editor({ editing }: { editing: boolean }) {
           onFit={() => {
             const size = stageSize()
             setState((current) => fitFloor(current, size.width, size.height))
-          }}
-          onHelp={() => setState((current) => toggleHelp(current))}
-        />
-        <Legend
-          floor={floor}
-          filter={state.legendFilter}
-          top={editing ? 148 : 104}
-          onFilter={(kind) => setState((current) => setLegendFilter(current, kind))}
-          onRoom={(roomId) => {
-            const size = stageSize()
-            setState((current) => showRoom(current, roomId, size.width, size.height))
           }}
         />
         {state.help && <ShortcutsHelp editing={canEdit} onClose={() => setState((current) => toggleHelp(current, false))} />}

@@ -1,6 +1,6 @@
 import { COPY_OFFSET, MIN_OBJECT_SPAN } from '../constants'
 import { newId } from '../document'
-import type { Access, DoorSide, Floor, Hinge, ObjectKind, PlanObject, StairDirection } from '../types'
+import type { Access, DoorSide, Floor, Hinge, ObjectKind, PlanObject, RoomMark, StairDirection } from '../types'
 import { chairsOf, DEFAULT_CHAIR, OBJECTS } from './catalog'
 import { findIcon } from './iconList'
 import { nextChairEdge } from './placement'
@@ -225,6 +225,19 @@ export function setRoomIcon(floor: Floor, id: string, icon: string | null): Floo
       const next = { ...room, icon }
       delete next.symbol
       return next
+    }),
+  }
+}
+
+/** Надписи комнаты: обе записываются разом, без записи комната возвращается к умолчанию. */
+export function setRoomMarks(floor: Floor, id: string, marks: { title: RoomMark | null; badge: RoomMark | null } | null): Floor {
+  return {
+    ...floor,
+    rooms: floor.rooms.map((room) => {
+      if (room.id !== id) return room
+      const { title: _title, badge: _badge, ...rest } = room
+      if (!marks) return rest
+      return { ...rest, ...(marks.title ? { title: marks.title } : {}), ...(marks.badge ? { badge: marks.badge } : {}) }
     }),
   }
 }

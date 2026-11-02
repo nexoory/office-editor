@@ -1,4 +1,6 @@
+import { MARKER_HIT_PX, MARKER_HIT_TOUCH_PX } from '../constants'
 import { chairsOf } from '../objects/catalog'
+import { hasMarker } from './lod'
 import { chairPose, pointInFrame } from '../objects/placement'
 import type { Floor, Point, Selection } from '../types'
 import { doorSwing } from './doors'
@@ -27,7 +29,19 @@ function openingAt(floor: Floor, wallId: string, offset: number, slack = 0): boo
   )
 }
 
-export function hitTest(floor: Floor, point: Point, zoom: number, editing: boolean): Hit {
+/** Маркер предмета — цель нажатия постоянного экранного радиуса, крупнее для пальца. */
+function hitMarker(floor: Floor, point: Point, zoom: number, touch: boolean): Hit | null {
+  const reach = (touch ? MARKER_HIT_TOUCH_PX : MARKER_HIT_PX) / zoom
+  let best: { id: string; score: number } | null = null
+  for (const object of floor.objects) {
+    if (!hasMarker(object, zoom)) continue
+    const score = dist(point, object)
+    if (score <= reach && (!best || score < best.score)) best = { id: object.id, score }
+  }
+  return best ? { kind: 'object', id: best.id } : null
+}
+
+export function hitTest(floor: Floor, point: Point, zoom: number, editing: boolean, touch = false): Hit {
   const vertexR = VERTEX_PX / zoom
   const slop = WALL_PX / zoom
 
@@ -85,6 +99,9 @@ export function hitTest(floor: Floor, point: Point, zoom: number, editing: boole
     }
     if (bestWall) return { kind: 'wall', id: bestWall.id }
   }
+
+  const marker = hitMarker(floor, point, zoom, touch)
+  if (marker) return marker
 
   const furniture = hitFurniture(floor, point, editing)
   if (furniture) return furniture

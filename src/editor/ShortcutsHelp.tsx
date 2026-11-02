@@ -1,3 +1,6 @@
+import { faXmark } from '@fortawesome/free-solid-svg-icons'
+import { IconButton } from './ui/Button'
+
 type Row = [keys: string, action: string]
 
 const VIEW: Row[] = [
@@ -36,13 +39,13 @@ const EDIT: Row[] = [
 export function ShortcutsHelp(props: { editing: boolean; onClose: () => void }) {
   return (
     <div className="shortcuts-backdrop" onPointerDown={props.onClose}>
-      <div className="shortcuts" role="dialog" aria-label="Клавиши" onPointerDown={(event) => event.stopPropagation()}>
-        <div className="inspector-head">
-          <p className="object-title">Клавиши и жесты</p>
-          <button type="button" className="icon-button" aria-label="Закрыть" onClick={props.onClose}>
-            ×
-          </button>
-        </div>
+      <div className="panel shortcuts" role="dialog" aria-label="Клавиши" onPointerDown={(event) => event.stopPropagation()}>
+        <header className="card-head">
+          <div className="card-titles">
+            <p className="card-title">Клавиши и жесты</p>
+          </div>
+          <IconButton icon={faXmark} label="Закрыть" onClick={props.onClose} />
+        </header>
         <Section title="Просмотр" rows={VIEW} />
         {props.editing && <Section title="Редактирование" rows={EDIT} />}
       </div>
@@ -53,7 +56,7 @@ export function ShortcutsHelp(props: { editing: boolean; onClose: () => void }) 
 function Section(props: { title: string; rows: Row[] }) {
   return (
     <section>
-      <h3>{props.title}</h3>
+      <h3 className="group-title">{props.title}</h3>
       <dl>
         {props.rows.map(([keys, action]) => (
           <div key={keys} className="shortcut-row">

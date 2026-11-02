@@ -57,11 +57,63 @@ export const TYPE_SYMBOL: Record<ObjectKind, string> = {
   fridge: 'snowflake',
   bed: 'bed',
   sofa: 'couch',
-  interest: 'circle',
+  interest: 'star',
 }
 
 export function typeSymbol(kind: ObjectKind): string {
   return TYPE_SYMBOL[kind]
+}
+
+export type Category = keyof typeof theme.category
+
+export const OBJECT_CATEGORY: Record<ObjectKind, Category> = {
+  stair: 'navigation',
+  table: 'furniture',
+  cooler: 'kitchen',
+  microwave: 'kitchen',
+  printer: 'tech',
+  wardrobe: 'furniture',
+  toilet: 'sanitary',
+  sink: 'sanitary',
+  shower: 'sanitary',
+  fridge: 'kitchen',
+  bed: 'furniture',
+  sofa: 'furniture',
+  interest: 'other',
+}
+
+export const CATEGORY_ORDER: Category[] = ['navigation', 'sanitary', 'kitchen', 'tech', 'furniture', 'other']
+
+export const CATEGORY_NAME: Record<Category, string> = {
+  navigation: 'Навигация',
+  sanitary: 'Санузел',
+  kitchen: 'Кухня и вода',
+  tech: 'Техника',
+  furniture: 'Мебель',
+  other: 'Прочее',
+}
+
+/** Кто первым занимает место при раскладке маркеров: меньше — раньше. */
+export const CATEGORY_PRIORITY: Record<Category, number> = {
+  other: 0,
+  sanitary: 1,
+  kitchen: 2,
+  tech: 3,
+  navigation: 4,
+  furniture: 5,
+}
+
+export function categoryOf(kind: ObjectKind): Category {
+  return OBJECT_CATEGORY[kind]
+}
+
+export function kindColor(kind: ObjectKind): string {
+  return theme.category[OBJECT_CATEGORY[kind]]
+}
+
+/** Знак предмета: своя иконка, если её нашли, иначе знак типа. */
+export function objectSymbol(object: Pick<PlanObject, 'kind' | 'symbol'>): string {
+  return object.symbol ?? TYPE_SYMBOL[object.kind]
 }
 
 export const CHAIR_NAME = 'Кресло'
@@ -71,7 +123,7 @@ export function objectName(kind: ObjectKind): string {
 }
 
 export function objectFill(object: Pick<PlanObject, 'kind' | 'color'>): string {
-  return object.color ?? theme.objectNeutral[object.kind]
+  return object.color ?? kindColor(object.kind)
 }
 
 export function stairStepOf(object: PlanObject): number {

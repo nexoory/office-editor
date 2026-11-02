@@ -1,49 +1,48 @@
 export const theme = {
-  canvas: '#f4f2ec',
-  floor: '#e7e4dc',
-  grid: '#e3e0d7',
-  wall: '#4a4742',
-  selected: '#3d7ea6',
+  /** Снаружи здания: серее пола, чтобы помещения читались как пространство. */
+  canvas: '#e9e7e1',
+  floor: '#f8f7f3',
+  grid: '#dedbd3',
+  wall: '#3f3d39',
+  selected: '#2f74b5',
   /** Обводка того, что схватит нажатие. */
-  hover: '#3d7ea6',
+  hover: '#2f74b5',
   vertex: '#5c5852',
-  ghost: 'rgba(74, 71, 66, 0.33)',
-  ghostDash: 'rgba(74, 71, 66, 0.22)',
-  ghostVertex: 'rgba(74, 71, 66, 0.5)',
+  ghost: 'rgba(63, 61, 57, 0.33)',
+  ghostDash: 'rgba(63, 61, 57, 0.22)',
+  ghostVertex: 'rgba(63, 61, 57, 0.5)',
   window: '#fbfaf6',
-  windowLine: '#4a4742',
+  windowLine: '#3f3d39',
   /** Вырез проёма: темнее пола, светлее стены. В документ не пишется. */
-  opening: '#d4cfc6',
+  opening: '#d6d2ca',
+  stairLine: '#77736b',
   label: '#2c2a26',
-  labelHalo: '#f4f2ec',
+  labelHalo: '#f8f7f3',
   guide: '#c4a15a',
   /** Ось, на которой совпали точки или кромки. */
   smart: '#c4533a',
-  snap: '#3d7ea6',
+  snap: '#2f74b5',
   close: '#2f8f62',
   align: '#3d8f8a',
-  hud: 'rgba(255, 252, 247, 0.96)',
-  hudLine: '#e0dcd3',
-  text: '#2c2a26',
+  text: '#26241f',
   muted: '#7a756c',
-  doorBadge: '#2f8f62',
-  doorKey: '#c4962c',
-  objectNeutral: {
-    stair: '#8a8680',
-    table: '#a89880',
-    cooler: '#7f97a8',
-    microwave: '#8d8680',
-    printer: '#8e9298',
-    wardrobe: '#9a8b78',
-    toilet: '#7f9aa3',
-    sink: '#6e96a4',
-    shower: '#7aa0ae',
-    fridge: '#8aa39b',
-    bed: '#b0a090',
-    sofa: '#a08b78',
-    interest: '#8d8680',
+  /** Точка маркера, не подходящего под фильтр. */
+  markerMuted: '#b3aea5',
+  markerRing: '#ffffff',
+  category: {
+    navigation: '#4a515c',
+    sanitary: '#2f7fc1',
+    kitchen: '#e07b2a',
+    tech: '#7a5cc4',
+    furniture: '#a08a6c',
+    other: '#d1495b',
   },
-  swatches: [
+  access: {
+    badge: '#2f9e6a',
+    key: '#d49a1c',
+  },
+  /** Образцы пола помещений: пастель, разбавляется полом. */
+  roomSwatches: [
     '#d7a394',
     '#b7c4a4',
     '#e3c98a',
@@ -52,6 +51,17 @@ export const theme = {
     '#c9b2a2',
     '#a9c0b6',
     '#e2b7a6',
+  ],
+  /** Образцы предметов: насыщенные, красят маркер и контур. */
+  markerSwatches: [
+    '#d1495b',
+    '#e07b2a',
+    '#d49a1c',
+    '#2f9e6a',
+    '#2a9d9a',
+    '#2f7fc1',
+    '#7a5cc4',
+    '#c2569b',
   ],
 }
 
@@ -66,17 +76,32 @@ function mixHex(color: string, toward: string, amount: number): string {
   return `#${mixed.map((part) => part.toString(16).padStart(2, '0')).join('')}`
 }
 
-/** Образец, разбавленный холстом, чтобы предметы читались на полу. */
+/** Образец, разбавленный полом: помещение остаётся фоном. */
 export function roomFill(color: string | null): string {
   if (!color) return theme.floor
-  return mixHex(color, theme.canvas, 0.34)
+  return mixHex(color, theme.floor, 0.3)
 }
 
+/** Подпись комнаты: тот же оттенок, но тёмный, чтобы читался на своём поле. */
 export function roomInk(color: string | null): string {
-  const source = color ?? theme.floor
-  const hex = source.replace('#', '')
-  const value = Number.parseInt(hex, 16)
-  if (hex.length !== 6 || Number.isNaN(value)) return theme.label
-  const channel = (shift: number) => Math.round(((value >> shift) & 255) * 0.4)
-  return `#${[channel(16), channel(8), channel(0)].map((part) => part.toString(16).padStart(2, '0')).join('')}`
+  if (!color) return theme.label
+  const hex = color.replace('#', '')
+  if (hex.length !== 6 || Number.isNaN(Number.parseInt(hex, 16))) return theme.label
+  return mixHex(color, '#1e1c19', 0.42)
+}
+
+/** Надпись помещения на полу: тёмный оттенок заливки, без цвета — тёплый серый. */
+export function roomMark(color: string | null): string {
+  if (!color) return '#6f6a61'
+  const hex = color.replace('#', '')
+  if (hex.length !== 6 || Number.isNaN(Number.parseInt(hex, 16))) return '#6f6a61'
+  return mixHex(color, '#1e1c19', 0.55)
+}
+
+export const ROOM_MARK_OPACITY = 0.5
+
+/** Знак комнаты в интерфейсе: образец чуть темнее, чтобы не терялся на белом. */
+export function roomTone(color: string | null): string {
+  if (!color) return theme.muted
+  return mixHex(color, '#1e1c19', 0.8)
 }

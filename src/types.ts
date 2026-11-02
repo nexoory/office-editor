@@ -29,7 +29,14 @@ export type Room = {
   /** Имя знака Font Awesome или отсутствие иконки. Старые типы читает roomIconName. */
   icon: string | null
   symbol?: string
+  /** Название и знак на полу: центр и размер в сантиметрах плана. Без записи — по умолчанию. */
+  title?: RoomMark
+  badge?: RoomMark
 }
+
+export type RoomMark = { x: number; y: number; size: number }
+
+export type RoomMarkPart = 'title' | 'badge'
 
 export type ObjectKind =
   | 'stair'
@@ -92,6 +99,9 @@ export type Selection =
   | { kind: 'room'; id: string }
   | { kind: 'object'; id: string }
   | { kind: 'chair'; objectId: string; chairId: string }
+
+/** Фильтр легенды: тип предмета или доступ двери. Состояние вида, в документ не пишется. */
+export type LegendFilter = ObjectKind | Exclude<Access, 'none'>
 
 export type View = { panX: number; panY: number; zoom: number }
 

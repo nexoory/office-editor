@@ -1,12 +1,13 @@
 import { doorSwing } from '../geometry/doors'
-import { add, mul, norm, sub } from '../geometry/math'
+import type { PlacedMarker } from '../geometry/lod'
 import { wallEnds } from '../geometry/walls'
-import { ACCESS_ICON_SIZE, AccessGlyph } from '../objects/icons'
 import { chairsOf, OBJECTS, objectFill, stairDirectionOf, stairStepOf } from '../objects/catalog'
+import { kindLook, MarkerShape } from '../objects/markers'
 import { chairPose, worldToLocal } from '../objects/placement'
 import { ChairGraphic, SignGraphic } from '../objects/signs'
+import { MARKER_PX } from '../constants'
 import { theme } from '../theme'
-import type { Floor, ObjectKind, PlanObject, Selection } from '../types'
+import type { Floor, LegendFilter, ObjectKind, PlanObject, Selection } from '../types'
 import { HANDLE_R_PX, handlePoints, type ObjectHandle } from '../objects/handles'
 
 const outline = {
@@ -16,7 +17,7 @@ const outline = {
   vectorEffect: 'non-scaling-stroke' as const,
 }
 
-export function FloorObjects(props: { floor: Floor; selection: Selection | null; zoom: number; filter: ObjectKind | null }) {
+export function FloorObjects(props: { floor: Floor; selection: Selection | null; editing: boolean; filter: LegendFilter | null }) {
   return (
     <g pointerEvents="none">
       {props.floor.objects.map((object) => (
@@ -28,9 +29,8 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null;
             step={object.kind === 'stair' ? stairStepOf(object) : undefined}
             direction={object.kind === 'stair' ? stairDirectionOf(object) : undefined}
             color={objectFill(object)}
-            symbol={object.symbol}
-            zoom={props.zoom}
-            dimmed={!!props.filter && object.kind !== props.filter && object.kind !== 'stair'}
+            editing={props.editing}
+            muted={!!props.filter && props.filter !== object.kind}
           />
           {props.selection?.kind === 'object' && props.selection.id === object.id && (
             <rect x={-object.length / 2} y={-object.width / 2} width={object.length} height={object.width} {...outline} />
@@ -46,7 +46,7 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null;
             return (
               <g key={chair.id} transform={`translate(${local.x} ${local.y}) rotate(${turn})`}>
                 <g transform={`scale(${chair.length} ${chair.width})`}>
-                  <ChairGraphic color={objectFill(object)} />
+                  <ChairGraphic color={objectFill(object)} editing={props.editing} />
                 </g>
                 {selected && (
                   <rect x={-chair.length / 2} y={-chair.width / 2} width={chair.length} height={chair.width} {...outline} />
@@ -54,6 +54,26 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null;
               </g>
             )
           })}
+        </g>
+      ))}
+    </g>
+  )
+}
+
+/** Маркеры поверх чертежа: постоянный экранный размер, всегда стоят прямо. */
+export function MarkerLayer(props: { markers: PlacedMarker[]; zoom: number }) {
+  return (
+    <g pointerEvents="none">
+      {props.markers.map((marker) => (
+        <g key={marker.key} transform={`translate(${marker.at.x} ${marker.at.y}) scale(${1 / props.zoom})`}>
+          <MarkerShape
+            level={marker.level}
+            look={marker.look}
+            size={marker.size}
+            label={marker.label}
+            selected={marker.selected}
+            hovered={marker.hovered}
+          />
         </g>
       ))}
     </g>
@@ -101,23 +121,28 @@ export function ObjectHandles(props: { object: PlanObject; zoom: number; active:
 
 export function PlacementGhost(props: { kind: ObjectKind; x: number; y: number; zoom: number }) {
   const spec = OBJECTS[props.kind]
+  const look = kindLook(props.kind)
   return (
-    <g transform={`translate(${props.x} ${props.y})`} opacity={0.55} pointerEvents="none">
+    <g transform={`translate(${props.x} ${props.y})`} opacity={0.7} pointerEvents="none">
       <SignGraphic
         kind={props.kind}
         length={spec.length}
         width={spec.width}
         step={spec.step}
         direction={spec.direction}
-        color={theme.objectNeutral[props.kind]}
-        zoom={props.zoom}
+        color={look.color}
+        editing
       />
+      {props.kind !== 'stair' && (
+        <g transform={`scale(${1 / props.zoom})`}>
+          <MarkerShape level="badge" look={look} size={MARKER_PX} />
+        </g>
+      )}
     </g>
   )
 }
 
-export function DoorLeaves(props: { floor: Floor; zoom: number; icons: boolean; selectedId: string | null; dimmed?: boolean }) {
-  const iconSize = props.dimmed ? ACCESS_ICON_SIZE / 3 : ACCESS_ICON_SIZE
+export function DoorLeaves(props: { floor: Floor; zoom: number; selectedId: string | null }) {
   return (
     <g pointerEvents="none">
       {props.floor.walls.flatMap((wall) => {
@@ -130,8 +155,6 @@ export function DoorLeaves(props: { floor: Floor; zoom: number; icons: boolean; 
             const swing = doorSwing(ends.a, ends.b, opening)
             if (!swing) return null
             const selected = props.selectedId === opening.id
-            const along = norm(sub(ends.b, ends.a))
-            const iconAt = add(ends.a, mul(along, opening.offset + opening.width / 2))
             return (
               <g key={opening.id}>
                 {selected && (
@@ -155,13 +178,6 @@ export function DoorLeaves(props: { floor: Floor; zoom: number; icons: boolean; 
                   strokeLinecap="round"
                 />
                 <circle cx={swing.hinge.x} cy={swing.hinge.y} r={3.2} fill={theme.wall} />
-                {props.icons && opening.access && opening.access !== 'none' && (
-                  <g transform={`translate(${iconAt.x} ${iconAt.y}) scale(${1 / props.zoom})`} opacity={props.dimmed ? 0.4 : 1}>
-                    <g transform={`translate(${-iconSize / 2} ${-iconSize / 2})`}>
-                      <AccessGlyph access={opening.access} size={iconSize} color={props.dimmed ? theme.muted : undefined} />
-                    </g>
-                  </g>
-                )}
               </g>
             )
           })

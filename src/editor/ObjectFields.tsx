@@ -1,9 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { faPlus } from '@fortawesome/free-solid-svg-icons'
+import { useState } from 'react'
 import { formatMeters, parseMeters } from '../geometry/formatLength'
-import { CHAIR_NAME, OBJECT_FIELDS, chairsOf, typeSymbol, visibleFields } from '../objects/catalog'
+import { OBJECT_FIELDS, chairsOf, typeSymbol, visibleFields } from '../objects/catalog'
 import { theme } from '../theme'
 import type { PlanObject, StairDirection } from '../types'
-import { IconPicker } from './IconPicker'
+import { IconSelect } from './IconPicker'
+import { IconButton } from './ui/Button'
+import { Chip } from './ui/Chip'
+import { Field, NumberField, TextField } from './ui/Field'
+import { Segmented } from './ui/Segmented'
+import { Swatches } from './ui/Swatches'
 
 export type ObjectFieldActions = {
   onTextFocus: (focused: boolean) => void
@@ -20,299 +26,194 @@ export type ObjectFieldActions = {
   onSelectChair: (objectId: string, chairId: string) => void
 }
 
-/** Тело карточки предмета: поля по матрице видимости. Название, копирование и удаление живут в заголовке карточки. */
+/** Тело карточки предмета: поля по матрице видимости, группами. Название и действия — в заголовке. */
 export function ObjectFields(props: { object: PlanObject; editing: boolean; actions: ObjectFieldActions }) {
   const { object, editing, actions } = props
-  const fields = visibleFields(OBJECT_FIELDS, editing, object.kind)
+  const shown = new Set(visibleFields(OBJECT_FIELDS, editing, object.kind).map((field) => field.id))
+
+  if (!editing) {
+    const note = shown.has('note') ? object.note.trim() : ''
+    const tags = shown.has('tags') ? object.tags : []
+    if (!note && tags.length === 0) return null
+    return (
+      <div className="card-read">
+        {note && <p className="card-note">{note}</p>}
+        {tags.length > 0 && (
+          <div className="chips">
+            {tags.map((tag) => (
+              <Chip key={tag}>{tag}</Chip>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const meters = { unit: 'м', format: formatMeters, parse: parseMeters, onFocus: actions.onTextFocus }
   return (
     <>
-      {fields.map((field) => {
-        if (field.id === 'note') {
-          return (
-            <NoteField
-              key={field.id}
-              note={object.note}
-              editing={editing}
-              onFocus={actions.onTextFocus}
-              onCommit={(note) => actions.onNote(object.id, note)}
-            />
-          )
-        }
-        if (field.id === 'tags') {
-          return (
-            <TagField
-              key={field.id}
-              tags={object.tags}
-              editing={editing}
-              onFocus={actions.onTextFocus}
-              onAdd={(tag) => actions.onAddTag(object.id, tag)}
-              onRemove={(tag) => actions.onRemoveTag(object.id, tag)}
-            />
-          )
-        }
-        if (field.id === 'symbol' && editing) {
-          return (
-            <div key={field.id} className="field">
-              <span>Иконка</span>
-              <IconPicker
+      {(shown.has('symbol') || shown.has('color')) && (
+        <section className="card-group">
+          {shown.has('symbol') && (
+            <Field label="Иконка">
+              <IconSelect
                 name={object.symbol ?? typeSymbol(object.kind)}
                 resetLabel="Иконка типа"
                 onFocus={actions.onTextFocus}
                 onChange={(symbol) => actions.onSymbol(object.id, symbol)}
               />
-            </div>
-          )
-        }
-        if (field.id === 'color' && editing) {
-          return (
-            <div key={field.id} className="field">
-              <span>Цвет</span>
-              <div className="swatches">
-                <button
-                  type="button"
-                  className={object.color === null ? 'swatch type-swatch active' : 'swatch type-swatch'}
-                  aria-label="Цвет типа"
-                  onClick={() => actions.onColor(object.id, null)}
+            </Field>
+          )}
+          {shown.has('color') && (
+            <Field label="Цвет">
+              <Swatches
+                label="Цвет предмета"
+                value={object.color}
+                colors={theme.markerSwatches}
+                resetLabel="Цвет категории"
+                onChange={(color) => actions.onColor(object.id, color)}
+              />
+            </Field>
+          )}
+        </section>
+      )}
+      {(shown.has('length') || shown.has('width') || shown.has('step') || shown.has('direction')) && (
+        <section className="card-group">
+          {shown.has('length') && shown.has('width') && (
+            <Field label="Размер">
+              <div className="pair">
+                <NumberField
+                  key={`length-${object.id}`}
+                  label="Длина"
+                  value={object.length}
+                  {...meters}
+                  onCommit={(value) => actions.onLength(object.id, value)}
                 />
-                {theme.swatches.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    className={object.color === color ? 'swatch active' : 'swatch'}
-                    style={{ background: color }}
-                    aria-label="Цвет объекта"
-                    onClick={() => actions.onColor(object.id, color)}
-                  />
-                ))}
+                <span className="pair-sep">×</span>
+                <NumberField
+                  key={`width-${object.id}`}
+                  label="Ширина"
+                  value={object.width}
+                  {...meters}
+                  onCommit={(value) => actions.onWidth(object.id, value)}
+                />
               </div>
-            </div>
-          )
-        }
-        if (field.id === 'length' && editing) {
-          return (
-            <MeterField
-              key={`length-${object.id}`}
-              label="Длина"
-              value={object.length}
-              onFocus={actions.onTextFocus}
-              onCommit={(value) => actions.onLength(object.id, value)}
-            />
-          )
-        }
-        if (field.id === 'width' && editing) {
-          return (
-            <MeterField
-              key={`width-${object.id}`}
-              label="Ширина"
-              value={object.width}
-              onFocus={actions.onTextFocus}
-              onCommit={(value) => actions.onWidth(object.id, value)}
-            />
-          )
-        }
-        if (field.id === 'step' && editing) {
-          return (
-            <MeterField
-              key={`step-${object.id}`}
-              label="Шаг"
-              value={object.step ?? object.length}
-              onFocus={actions.onTextFocus}
-              onCommit={(value) => actions.onStep(object.id, value)}
-            />
-          )
-        }
-        if (field.id === 'direction' && editing) {
-          const direction = object.direction ?? 'up'
-          return (
-            <div key={field.id} className="field">
-              <span>Направление</span>
-              <div className="seg">
-                <button type="button" aria-pressed={direction === 'up'} onClick={() => actions.onDirection(object.id, 'up')}>
-                  Вверх
-                </button>
-                <button type="button" aria-pressed={direction === 'down'} onClick={() => actions.onDirection(object.id, 'down')}>
-                  Вниз
-                </button>
-              </div>
-            </div>
-          )
-        }
-        if (field.id === 'chairs' && editing && object.kind === 'table') {
-          return (
-            <ChairList
-              key={field.id}
-              object={object}
-              onAdd={() => actions.onAddChair(object.id)}
-              onSelect={(chairId) => actions.onSelectChair(object.id, chairId)}
-            />
-          )
-        }
-        return null
-      })}
+            </Field>
+          )}
+          {shown.has('step') && (
+            <Field label="Шаг">
+              <NumberField
+                key={`step-${object.id}`}
+                label="Шаг"
+                value={object.step ?? object.length}
+                {...meters}
+                onCommit={(value) => actions.onStep(object.id, value)}
+              />
+            </Field>
+          )}
+          {shown.has('direction') && (
+            <Field label="Направление">
+              <Segmented
+                label="Направление"
+                value={object.direction ?? 'up'}
+                options={[
+                  { value: 'up', label: 'Вверх' },
+                  { value: 'down', label: 'Вниз' },
+                ]}
+                onChange={(direction) => actions.onDirection(object.id, direction)}
+              />
+            </Field>
+          )}
+        </section>
+      )}
+      {shown.has('chairs') && object.kind === 'table' && (
+        <section className="card-group">
+          <ChairRow object={object} onAdd={() => actions.onAddChair(object.id)} onSelect={(id) => actions.onSelectChair(object.id, id)} />
+        </section>
+      )}
+      {(shown.has('note') || shown.has('tags')) && (
+        <section className="card-group">
+          {shown.has('note') && (
+            <Field label="Описание">
+              <TextField
+                label="Описание"
+                value={object.note}
+                placeholder="Нет"
+                onFocus={actions.onTextFocus}
+                onCommit={(note) => actions.onNote(object.id, note)}
+              />
+            </Field>
+          )}
+          {shown.has('tags') && (
+            <Field label="Теги" align="start">
+              <TagInput
+                tags={object.tags}
+                onFocus={actions.onTextFocus}
+                onAdd={(tag) => actions.onAddTag(object.id, tag)}
+                onRemove={(tag) => actions.onRemoveTag(object.id, tag)}
+              />
+            </Field>
+          )}
+        </section>
+      )}
     </>
   )
 }
 
-function ChairList(props: { object: PlanObject; onAdd: () => void; onSelect: (chairId: string) => void }) {
+function ChairRow(props: { object: PlanObject; onAdd: () => void; onSelect: (chairId: string) => void }) {
   const chairs = chairsOf(props.object)
   return (
-    <div className="field">
-      <span>Кресла</span>
-      {chairs.map((chair, index) => (
-        <button key={chair.id} type="button" className="text-button" onClick={() => props.onSelect(chair.id)}>
-          {CHAIR_NAME} {index + 1}
-        </button>
-      ))}
-      <button type="button" className="text-button" onClick={props.onAdd}>
-        Добавить кресло
-      </button>
-    </div>
-  )
-}
-
-function NoteField(props: {
-  note: string
-  editing: boolean
-  onFocus: (focused: boolean) => void
-  onCommit: (note: string) => void
-}) {
-  const [draft, setDraft] = useState(props.note)
-  const revert = useRef(false)
-  useEffect(() => setDraft(props.note), [props.note])
-  if (!props.editing) {
-    return (
-      <div className="field">
-        <span>Описание</span>
-        <p className="readonly">{props.note}</p>
+    <Field label="Кресла">
+      <div className="chips">
+        {chairs.map((chair, index) => (
+          <Chip key={chair.id} title={`Кресло ${index + 1}`} onClick={() => props.onSelect(chair.id)}>
+            {index + 1}
+          </Chip>
+        ))}
+        <IconButton icon={faPlus} size={11} label="Добавить кресло" className="btn-small" onClick={props.onAdd} />
       </div>
-    )
-  }
-  return (
-    <label className="field">
-      <span>Описание</span>
-      <input
-        aria-label="Описание"
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onFocus={() => props.onFocus(true)}
-        onBlur={() => {
-          props.onFocus(false)
-          if (revert.current) {
-            revert.current = false
-            setDraft(props.note)
-            return
-          }
-          if (draft !== props.note) props.onCommit(draft)
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            event.currentTarget.blur()
-          } else if (event.key === 'Escape') {
-            event.preventDefault()
-            event.stopPropagation()
-            revert.current = true
-            event.currentTarget.blur()
-          }
-        }}
-      />
-    </label>
+    </Field>
   )
 }
 
-function TagField(props: {
+/** Теги и поле нового тега в одной рамке. Enter добавляет, Backspace в пустом поле снимает последний. */
+function TagInput(props: {
   tags: string[]
-  editing: boolean
   onFocus: (focused: boolean) => void
   onAdd: (tag: string) => void
   onRemove: (tag: string) => void
 }) {
   const [draft, setDraft] = useState('')
   return (
-    <div className="field">
-      <span>Теги</span>
-      <div className="tags">
-        {props.tags.map((tag) => (
-          <span key={tag} className="tag">
-            {tag}
-            {props.editing && (
-              <button type="button" aria-label={`Снять ${tag}`} onClick={() => props.onRemove(tag)}>
-                ×
-              </button>
-            )}
-          </span>
-        ))}
-      </div>
-      {props.editing && (
-        <input
-          aria-label="Тег"
-          value={draft}
-          placeholder="Тег"
-          onChange={(event) => setDraft(event.target.value)}
-          onFocus={() => props.onFocus(true)}
-          onBlur={() => props.onFocus(false)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              props.onAdd(draft)
-              setDraft('')
-            } else if (event.key === 'Escape') {
-              event.preventDefault()
-              event.stopPropagation()
-              setDraft('')
-              event.currentTarget.blur()
-            }
-          }}
-        />
-      )}
-    </div>
-  )
-}
-
-function MeterField(props: {
-  label: string
-  value: number
-  onFocus: (focused: boolean) => void
-  onCommit: (units: number) => void
-}) {
-  const [draft, setDraft] = useState(formatMeters(props.value))
-  const revert = useRef(false)
-  useEffect(() => setDraft(formatMeters(props.value)), [props.value])
-  return (
-    <label className="field">
-      <span>{props.label}, м</span>
+    <span className="input input-tags">
+      {props.tags.map((tag) => (
+        <Chip key={tag} removeLabel={`Снять ${tag}`} onRemove={() => props.onRemove(tag)}>
+          {tag}
+        </Chip>
+      ))}
       <input
-        aria-label={props.label}
+        aria-label="Новый тег"
         value={draft}
-        inputMode="decimal"
+        placeholder={props.tags.length ? '' : 'Добавить'}
         onChange={(event) => setDraft(event.target.value)}
         onFocus={() => props.onFocus(true)}
-        onBlur={() => {
-          props.onFocus(false)
-          if (revert.current) {
-            revert.current = false
-            setDraft(formatMeters(props.value))
-            return
-          }
-          const parsed = parseMeters(draft)
-          if (parsed === null) {
-            setDraft(formatMeters(props.value))
-            return
-          }
-          props.onCommit(parsed)
-        }}
+        onBlur={() => props.onFocus(false)}
         onKeyDown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault()
-            event.currentTarget.blur()
+            if (draft.trim()) props.onAdd(draft)
+            setDraft('')
+          } else if (event.key === 'Backspace' && !draft && props.tags.length) {
+            event.preventDefault()
+            props.onRemove(props.tags[props.tags.length - 1])
           } else if (event.key === 'Escape') {
             event.preventDefault()
             event.stopPropagation()
-            revert.current = true
+            setDraft('')
             event.currentTarget.blur()
           }
         }}
       />
-    </label>
+    </span>
   )
 }

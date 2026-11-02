@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement } from 'react'
 import { GRID_STEP } from '../constants'
 import type { EditorState, Hover, PointerInfo } from './reduce'
 import { activeFloor, cursorFor, ghostFloor } from './reduce'
 import { hitMatchesSelection } from '../geometry/hitTest'
-import { analyze, sameIds, type AnalyzedFace } from '../geometry/faces'
+import { analyze, sameIds } from '../geometry/faces'
+import { floorShape } from '../geometry/roomShape'
 import { formatLength } from '../geometry/formatLength'
-import { add, dist, interiorPoint, left, mul, norm, pointInPolygon, pointInRegion, projectSegment, sub } from '../geometry/math'
-import { safeOffset } from '../geometry/polygon'
+import { add, left, mul, norm, sub } from '../geometry/math'
 import {
   collectAlignRefs,
   geometryProbes,
@@ -24,13 +24,18 @@ import {
   type Preview,
 } from '../geometry/preview'
 import { OBJECTS } from '../objects/catalog'
-import { roomFill, roomInk, theme } from '../theme'
-import type { Floor, Point, Selection } from '../types'
+import { roomFill, roomMark, ROOM_MARK_OPACITY, theme } from '../theme'
+import type { Floor, Point, RoomMarkPart, Selection } from '../types'
 import { wallEnds, wallGraphics, wallLengthOf } from '../geometry/walls'
-import { DoorLeaves, FloorObjects, ObjectHandles, PlacementGhost } from './figures'
+import { DoorLeaves, FloorObjects, MarkerLayer, ObjectHandles, PlacementGhost } from './figures'
 import { chairsOf } from '../objects/catalog'
-import { ROOM_ICON_SIZE, RoomGlyph, roomIconName } from '../objects/icons'
 import { chairPose } from '../objects/placement'
+import { FaIcon } from '../objects/faIcon'
+import { findIcon } from '../objects/iconList'
+import { layoutMarkers } from '../geometry/lod'
+import { floorMarks, markRect, titleFont, type Rect, type ResolvedMarks } from '../geometry/roomMarks'
+
+/** Отступ подписи от стен комнаты, в пикселях экрана. */
 
 type Pinch = { distance: number; cx: number; cy: number }
 
@@ -65,8 +70,11 @@ export function Canvas(props: {
     observer.observe(element)
     const onWheel = (event: WheelEvent) => {
       const origin = event.target instanceof Element ? event.target : event.target instanceof Node ? event.target.parentElement : null
-      if (origin?.closest('.place-menu, .legend, .icon-picker-list, .wheel-field, .context-menu, .shortcuts')) return
-      if (origin instanceof HTMLInputElement || origin instanceof HTMLTextAreaElement) return
+      if (!origin || !element.contains(origin)) {
+        // Щипок тачпада над плашкой не должен масштабировать саму страницу.
+        if (event.ctrlKey) event.preventDefault()
+        return
+      }
       event.preventDefault()
       const rect = element.getBoundingClientRect()
       wheel.current({
@@ -128,6 +136,21 @@ export function Canvas(props: {
   }
 
   const hover = state.gesture || state.menu ? null : state.hover
+  const marks = useMemo(() => floorMarks(floor, analysis.faces), [floor])
+  const decorMarks = state.decor ? marks.find((item) => item.roomId === state.decor?.roomId) ?? null : null
+  const markerHover = hover?.kind === 'object' ? hover : null
+  const markers = useMemo(
+    () =>
+      layoutMarkers({
+        floor,
+        zoom,
+        selection: state.selection,
+        hover: markerHover,
+        filter: state.legendFilter,
+        obstacles: marks.flatMap((item) => [markRect(item, 'title'), markRect(item, 'badge')]).filter((rect): rect is Rect => !!rect).map((rect) => ({ x0: rect.x0 * zoom, y0: rect.y0 * zoom, x1: rect.x1 * zoom, y1: rect.y1 * zoom })),
+      }),
+    [floor, zoom, state.selection, markerHover, state.legendFilter, marks],
+  )
   const handleObject =
     props.editing && state.tool === 'select' && state.selection?.kind === 'object'
       ? floor.objects.find((item) => state.selection?.kind === 'object' && item.id === state.selection.id) ?? null
@@ -209,7 +232,7 @@ export function Canvas(props: {
           height={bounds.h}
           fill={theme.canvas}
         />
-        <Grid bounds={bounds} zoom={zoom} />
+        {props.editing && <Grid bounds={bounds} zoom={zoom} />}
         {analysis.faces.map((face) => {
           const room = floor.rooms.find((item) => sameIds(item.vertexIds, face.vertexIds))
           if (!room) return null
@@ -257,7 +280,7 @@ export function Canvas(props: {
                   />
                 </g>
               ))}
-            <DoorLeaves floor={ghost} zoom={zoom} icons={false} selectedId={null} />
+            <DoorLeaves floor={ghost} zoom={zoom} selectedId={null} />
           </g>
         )}
         {ghostGraphics?.dashes.map((dash) => (
@@ -284,66 +307,8 @@ export function Canvas(props: {
               pointerEvents="none"
             />
           ))}
-        {analysis.faces.map((face) => {
-          const room = floor.rooms.find((item) => sameIds(item.vertexIds, face.vertexIds))
-          if (!room) return null
-          const iconName = roomIconName(room)
-          if (!room.name && !iconName) return null
-          const shape = floorShape(floor, face)
-          const center = labelPoint(shape.outer, shape.holes)
-          const textBudget = Math.max(0, span(shape.outer) * zoom - 16)
-          const label = room.name ? ellipsize(room.name, textBudget) : ''
-          const ink = roomInk(room.color)
-          const cover = 2 / zoom
-          return (
-            <g key={`${room.id}-name`} pointerEvents="none">
-              <mask
-                id={`room-mark-${room.id}`}
-                maskUnits="userSpaceOnUse"
-                maskContentUnits="userSpaceOnUse"
-                x={bounds.x}
-                y={bounds.y}
-                width={bounds.w}
-                height={bounds.h}
-              >
-                <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} fill="#fff" />
-                {floor.objects.map((object) => (
-                  <polygon key={object.id} points={footprintPoints(object, cover)} fill="#000" />
-                ))}
-                {floor.objects.flatMap((object) =>
-                  chairsOf(object).map((chair) => (
-                    <polygon key={chair.id} points={footprintPoints(chairPose(object, chair), cover)} fill="#000" />
-                  )),
-                )}
-              </mask>
-              <g mask={`url(#room-mark-${room.id})`}>
-                <g transform={`translate(${center.x} ${center.y}) scale(${1 / zoom})`}>
-                  {iconName && (
-                    <g transform={`translate(${-ROOM_ICON_SIZE / 2} ${label ? -ROOM_ICON_SIZE - 4 : -ROOM_ICON_SIZE / 2})`}>
-                      <RoomGlyph name={iconName} color={ink} />
-                    </g>
-                  )}
-                  {label && (
-                    <text
-                      y={iconName ? 14 : 0}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={20}
-                      fontWeight={600}
-                      fill={ink}
-                      stroke={theme.labelHalo}
-                      strokeWidth={3}
-                      paintOrder="stroke"
-                    >
-                      {label}
-                    </text>
-                  )}
-                </g>
-              </g>
-            </g>
-          )
-        })}
-        <FloorObjects floor={floor} selection={state.selection} zoom={zoom} filter={state.legendFilter} />
+        <RoomMarks marks={marks} rooms={floor.rooms} />
+        <FloorObjects floor={floor} selection={state.selection} editing={props.editing} filter={state.legendFilter} />
         {state.placing?.dragging && (
           <PlacementGhost kind={state.placing.kind} x={state.placing.x} y={state.placing.y} zoom={zoom} />
         )}
@@ -398,13 +363,8 @@ export function Canvas(props: {
             />
           ))}
         </g>
-        <DoorLeaves
-          floor={floor}
-          zoom={zoom}
-          icons
-          dimmed={state.legendFilter !== null}
-          selectedId={state.selection?.kind === 'opening' ? state.selection.id : null}
-        />
+        <DoorLeaves floor={floor} zoom={zoom} selectedId={state.selection?.kind === 'opening' ? state.selection.id : null} />
+        <MarkerLayer markers={markers} zoom={zoom} />
         {props.editing &&
           floor.vertices.map((vertex) => {
             const selected = state.selection?.kind === 'vertex' && state.selection.id === vertex.id
@@ -419,6 +379,9 @@ export function Canvas(props: {
               />
             )
           })}
+        {props.editing && decorMarks && (
+          <DecorLayer marks={decorMarks} bounds={bounds} part={state.decor?.part ?? null} hover={state.decorHover} zoom={zoom} />
+        )}
         {hover && <HoverOutline floor={floor} analysis={analysis} hover={hover} selection={state.selection} zoom={zoom} />}
         {handleObject && !busy && (
           <ObjectHandles object={handleObject} zoom={zoom} active={hover?.kind === 'handle' ? hover.handle : null} />
@@ -746,23 +709,6 @@ function wallVertexIds(floor: Floor, wallId: string): string[] {
   return wall ? [wall.a, wall.b] : []
 }
 
-function floorShape(floor: Floor, face: AnalyzedFace) {
-  return {
-    outer: safeOffset(face.outer, halfWidths(floor, face.vertexIds), true),
-    holes: face.holeIds.map((ids, index) => safeOffset(face.holes[index] ?? [], halfWidths(floor, ids), false)),
-  }
-}
-
-function halfWidths(floor: Floor, ids: string[]): number[] {
-  return ids.map((id, index) => {
-    const next = ids[(index + 1) % ids.length]
-    const wall = floor.walls.find(
-      (item) => (item.a === id && item.b === next) || (item.a === next && item.b === id),
-    )
-    return (wall?.thickness ?? 0) / 2
-  })
-}
-
 function pathOf(outer: Point[], holes: Point[][]): string {
   return [outer, ...holes].map(ringPath).join(' ')
 }
@@ -785,81 +731,108 @@ function openingQuad(a: Point, b: Point, thickness: number, offset: number, widt
   return [add(p0, mul(n, -h)), add(p1, mul(n, -h)), add(p1, mul(n, h)), add(p0, mul(n, h))]
 }
 
-function labelPoint(points: Point[], holes: Point[][]): Point {
-  if (points.length === 0) return { x: 0, y: 0 }
-  const average = points.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), { x: 0, y: 0 })
-  const center = { x: average.x / points.length, y: average.y / points.length }
-  if (holes.length === 0) return pointInPolygon(center, points) ? center : interiorPoint(points)
-  let minX = Infinity
-  let maxX = -Infinity
-  let minY = Infinity
-  let maxY = -Infinity
-  for (const point of points) {
-    minX = Math.min(minX, point.x)
-    maxX = Math.max(maxX, point.x)
-    minY = Math.min(minY, point.y)
-    maxY = Math.max(maxY, point.y)
-  }
-  let best = pointInRegion(center, points, holes) ? center : null
-  let bestScore = best ? clearance(best, points, holes) : -1
-  const steps = 7
-  for (let row = 0; row <= steps; row++) {
-    for (let column = 0; column <= steps; column++) {
-      const point = {
-        x: minX + ((maxX - minX) * column) / steps,
-        y: minY + ((maxY - minY) * row) / steps,
-      }
-      if (!pointInRegion(point, points, holes)) continue
-      const score = clearance(point, points, holes) - dist(point, center) * 0.15
-      if (score > bestScore) {
-        best = point
-        bestScore = score
-      }
-    }
-  }
-  return best ?? interiorPoint(points)
+/** Название и знак лежат на полу: размеры плана, цвет комнаты, обрезка по её контуру. */
+function RoomMarks(props: { marks: ResolvedMarks[]; rooms: Floor['rooms'] }) {
+  return (
+    <g pointerEvents="none" opacity={ROOM_MARK_OPACITY}>
+      {props.marks.map((item) => {
+        const room = props.rooms.find((entry) => entry.id === item.roomId)
+        const ink = roomMark(room?.color ?? null)
+        const icon = item.badge ? findIcon(item.icon ?? undefined) : undefined
+        const clip = `room-clip-${item.roomId}`
+        return (
+          <g key={item.roomId}>
+            <clipPath id={clip}>
+              <path d={pathOf(item.outer, item.holes)} clipRule="evenodd" />
+            </clipPath>
+            <g clipPath={`url(#${clip})`}>
+              {icon && item.badge && (
+                <g transform={`translate(${item.badge.x} ${item.badge.y})`}>
+                  <FaIcon icon={icon} size={item.badge.size} color={ink} />
+                </g>
+              )}
+              {item.title && (
+                <text
+                  x={item.title.x}
+                  y={item.title.y}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fill={ink}
+                  style={{ font: titleFont(item.title.size) }}
+                >
+                  {item.name}
+                </text>
+              )}
+            </g>
+          </g>
+        )
+      })}
+    </g>
+  )
 }
 
-function clearance(point: Point, outer: Point[], holes: Point[][]): number {
-  let gap = ringDistance(point, outer)
-  for (const hole of holes) gap = Math.min(gap, ringDistance(point, hole))
-  return gap
-}
-
-function ringDistance(point: Point, ring: Point[]): number {
-  let gap = Infinity
-  for (let index = 0; index < ring.length; index++) {
-    gap = Math.min(gap, projectSegment(point, ring[index], ring[(index + 1) % ring.length]).distance)
-  }
-  return gap
-}
-
-function span(points: Point[]): number {
-  let min = Infinity
-  let max = -Infinity
-  for (const point of points) {
-    min = Math.min(min, point.x)
-    max = Math.max(max, point.x)
-  }
-  return max - min
-}
-
-function ellipsize(text: string, maxPx: number): string {
-  if (maxPx <= 8) return ''
-  const context = measure()
-  if (!context) return text
-  context.font = '600 20px Segoe UI, system-ui, sans-serif'
-  if (context.measureText(text).width <= maxPx) return text
-  let value = text
-  while (value.length > 1 && context.measureText(`${value}…`).width > maxPx) value = value.slice(0, -1)
-  return `${value}…`
-}
-
-let measureContext: CanvasRenderingContext2D | null = null
-function measure() {
-  if (measureContext) return measureContext
-  measureContext = document.createElement('canvas').getContext('2d')
-  return measureContext
+/** Оформление: всё вне комнаты притушено, у надписей рамки, у выбранной — углы размера. */
+function DecorLayer(props: {
+  marks: ResolvedMarks
+  bounds: { x: number; y: number; w: number; h: number }
+  part: RoomMarkPart | null
+  hover: RoomMarkPart | 'handle' | null
+  zoom: number
+}) {
+  const { marks, bounds, zoom } = props
+  const room = pathOf(marks.outer, marks.holes)
+  const handle = 8 / zoom
+  return (
+    <g pointerEvents="none">
+      <path
+        d={`M${bounds.x} ${bounds.y}h${bounds.w}v${bounds.h}h${-bounds.w}Z ${room}`}
+        fill={theme.canvas}
+        fillOpacity={0.72}
+        fillRule="evenodd"
+      />
+      <path d={room} fill="none" stroke={theme.selected} strokeWidth={2 / zoom} />
+      {(['badge', 'title'] as const).map((part) => {
+        const rect = markRect(marks, part)
+        if (!rect) return null
+        const active = props.part === part
+        const corners = [
+          [rect.x0, rect.y0],
+          [rect.x1, rect.y0],
+          [rect.x1, rect.y1],
+          [rect.x0, rect.y1],
+        ]
+        return (
+          <g key={part}>
+            <rect
+              x={rect.x0}
+              y={rect.y0}
+              width={rect.x1 - rect.x0}
+              height={rect.y1 - rect.y0}
+              fill="none"
+              stroke={theme.selected}
+              strokeOpacity={active || props.hover === part ? 1 : 0.55}
+              strokeWidth={(active ? 1.5 : 1) / zoom}
+              strokeDasharray={active ? undefined : `${4 / zoom} ${3 / zoom}`}
+            />
+            {active &&
+              corners.map(([x, y], index) => (
+                <rect
+                  key={index}
+                  x={x - handle / 2}
+                  y={y - handle / 2}
+                  width={handle}
+                  height={handle}
+                  rx={1.5 / zoom}
+                  fill="#fff"
+                  stroke={theme.selected}
+                  strokeWidth={1.5 / zoom}
+                />
+              ))}
+          </g>
+        )
+      })}
+    </g>
+  )
 }
 
 function viewBounds(view: { panX: number; panY: number; zoom: number }, width: number, height: number) {

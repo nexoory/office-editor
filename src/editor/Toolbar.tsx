@@ -5,7 +5,7 @@ import type { Tool } from './input'
 
 export function Toolbar(props: { tool: Tool; onTool: (tool: Tool) => void; children?: ReactNode }) {
   return (
-    <div className="toolbar" role="toolbar" aria-label="Инструменты" onPointerDown={(event) => event.stopPropagation()}>
+    <div className="panel toolbar" role="toolbar" aria-label="Инструменты" onPointerDown={(event) => event.stopPropagation()}>
       <button
         type="button"
         className="tool-button"
