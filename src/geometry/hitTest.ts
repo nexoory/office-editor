@@ -5,7 +5,7 @@ import type { Floor, Point, Selection } from '../types'
 import { doorSwing } from './doors'
 import { analyze, ringPoints } from './faces'
 import { dist, pointInPolygon, pointInRegion, projectSegment } from './math'
-import { wallEnds, wallLengthOf } from './walls'
+import { wallEnds, wallReach } from './walls'
 
 export type Hit =
   | { kind: 'opening'; id: string }
@@ -19,12 +19,20 @@ export type Hit =
 const VERTEX_PX = 8
 const WALL_PX = 6
 
-function openingAt(floor: Floor, wallId: string, offset: number, slack = 0): boolean {
-  return floor.openings.some(
-    (opening) =>
-      opening.wallId === wallId &&
-      offset > opening.offset - slack &&
-      offset < opening.offset + opening.width + slack,
+function openingsByWall(floor: Floor) {
+  const map = new Map<string, Floor['openings']>()
+  for (const opening of floor.openings) {
+    const list = map.get(opening.wallId)
+    if (list) list.push(opening)
+    else map.set(opening.wallId, [opening])
+  }
+  return map
+}
+
+function openingAt(openings: Floor['openings'] | undefined, offset: number, slack = 0): boolean {
+  return (
+    !!openings &&
+    openings.some((opening) => offset > opening.offset - slack && offset < opening.offset + opening.width + slack)
   )
 }
 
@@ -44,22 +52,24 @@ export function hitTest(floor: Floor, point: Point, zoom: number, editing: boole
   const slop = WALL_PX / zoom
 
   if (editing) {
+    const grouped = openingsByWall(floor)
     let bestOpening: { id: string; score: number } | null = null
     for (const wall of floor.walls) {
       if (wall.thickness <= 0) continue
       const ends = wallEnds(floor, wall)
       if (!ends) continue
-      const length = wallLengthOf(floor, wall)
-      const half = wall.thickness / 2
-      for (const opening of floor.openings) {
-        if (opening.wallId !== wall.id) continue
-        const proj = projectSegment(point, ends.a, ends.b)
-        const offset = proj.t * length
+      const wallOpenings = grouped.get(wall.id)
+      if (!wallOpenings) continue
+      const length = dist(ends.a, ends.b)
+      const reach = wallReach(wall, ends.a, ends.b, point) + slop
+      const proj = projectSegment(point, ends.a, ends.b)
+      const offset = proj.t * length
+      for (const opening of wallOpenings) {
         let score: number | null = null
         if (
           offset >= opening.offset - 0.5 &&
           offset <= opening.offset + opening.width + 0.5 &&
-          proj.distance <= half + slop
+          proj.distance <= reach
         ) {
           score = proj.distance
         }
@@ -88,11 +98,11 @@ export function hitTest(floor: Floor, point: Point, zoom: number, editing: boole
       const ends = wallEnds(floor, wall)
       if (!ends) continue
       const proj = projectSegment(point, ends.a, ends.b)
-      const reach = wall.thickness > 0 ? wall.thickness / 2 + slop : editing ? slop : 0
+      const reach = wall.thickness > 0 ? wallReach(wall, ends.a, ends.b, point) + slop : slop
       if (wall.thickness <= 0 && !editing) continue
       if (proj.distance > reach) continue
-      const offset = proj.t * wallLengthOf(floor, wall)
-      if (wall.thickness > 0 && openingAt(floor, wall.id, offset)) continue
+      const offset = proj.t * dist(ends.a, ends.b)
+      if (wall.thickness > 0 && openingAt(grouped.get(wall.id), offset)) continue
       if (!bestWall || proj.distance < bestWall.score) bestWall = { id: wall.id, score: proj.distance }
     }
     if (bestWall) return { kind: 'wall', id: bestWall.id }
@@ -126,14 +136,14 @@ export function hitGhostWall(floor: Floor, ghost: Floor | null, point: Point, zo
     const ends = wallEnds(ghost, wall)
     if (!ends) continue
     const proj = projectSegment(point, ends.a, ends.b)
-    const reach = wall.thickness > 0 ? wall.thickness / 2 + slop : slop
+    const reach = wallReach(wall, ends.a, ends.b, point) + slop
     if (proj.distance > reach) continue
     const covered = floor.walls.some((current) => {
       if (current.thickness <= 0) return false
       const currentEnds = wallEnds(floor, current)
       if (!currentEnds) return false
       const on = projectSegment(point, currentEnds.a, currentEnds.b)
-      return on.distance <= current.thickness / 2
+      return on.distance <= wallReach(current, currentEnds.a, currentEnds.b, point)
     })
     if (covered) continue
     if (!bestGhost || proj.distance < bestGhost.score) bestGhost = { id: wall.id, score: proj.distance }

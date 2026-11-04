@@ -1,6 +1,6 @@
 import { SNAP_PX } from '../constants'
 import type { Floor, Point } from '../types'
-import { wallEnds } from './walls'
+import { wallBias, wallEnds } from './walls'
 
 /** Вертикаль — общая координата x, горизонталь — общая y. */
 export type AlignAxis = 'x' | 'y'
@@ -65,7 +65,7 @@ export function geometryProbes(floor: Floor, vertexIds: string[]): Point[] {
     if (!ids.has(wall.a) || !ids.has(wall.b)) continue
     const ends = wallEnds(floor, wall)
     if (!ends) continue
-    probes.push(...edgeProbes(ends.a, ends.b, wall.thickness))
+    probes.push(...edgeProbes(ends.a, ends.b, wallBias(wall)))
   }
   return probes
 }
@@ -99,13 +99,19 @@ export function collectAlignRefs(floor: Floor, excludeVertexIds: string[], exclu
     const dx = Math.abs(ends.a.x - ends.b.x)
     const dy = Math.abs(ends.a.y - ends.b.y)
     const mid = { x: (ends.a.x + ends.b.x) / 2, y: (ends.a.y + ends.b.y) / 2 }
-    const half = wall.thickness / 2
+    const bias = wallBias(wall)
+    const span = Math.hypot(ends.b.x - ends.a.x, ends.b.y - ends.a.y)
+    if (span < 1e-6) continue
+    const nx = -(ends.b.y - ends.a.y) / span
+    const ny = (ends.b.x - ends.a.x) / span
+    const leftEdge = { x: mid.x + nx * bias.left, y: mid.y + ny * bias.left }
+    const rightEdge = { x: mid.x - nx * bias.right, y: mid.y - ny * bias.right }
     if (dx <= FACE_SLACK && dy > dx) {
-      addPoint(mid.x - half, mid.y)
-      addPoint(mid.x + half, mid.y)
+      addPoint(leftEdge.x, mid.y)
+      addPoint(rightEdge.x, mid.y)
     } else if (dy <= FACE_SLACK && dx > dy) {
-      addPoint(mid.x, mid.y - half)
-      addPoint(mid.x, mid.y + half)
+      addPoint(mid.x, leftEdge.y)
+      addPoint(mid.x, rightEdge.y)
     }
   }
   return refs
@@ -159,18 +165,17 @@ export function matchAlignGuides(probes: Point[], refs: AlignRef[], zoom: number
   return guides
 }
 
-function edgeProbes(a: Point, b: Point, thickness: number): Point[] {
+function edgeProbes(a: Point, b: Point, bias: { left: number; right: number }): Point[] {
   const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
   const probes = [mid]
   const dx = b.x - a.x
   const dy = b.y - a.y
   const length = Math.hypot(dx, dy)
-  if (thickness <= 0 || length < 1e-6) return probes
+  if (length < 1e-6) return probes
   const nx = -dy / length
   const ny = dx / length
-  const half = thickness / 2
-  probes.push({ x: mid.x + nx * half, y: mid.y + ny * half })
-  probes.push({ x: mid.x - nx * half, y: mid.y - ny * half })
+  if (bias.left > 0) probes.push({ x: mid.x + nx * bias.left, y: mid.y + ny * bias.left })
+  if (bias.right > 0) probes.push({ x: mid.x - nx * bias.right, y: mid.y - ny * bias.right })
   return probes
 }
 

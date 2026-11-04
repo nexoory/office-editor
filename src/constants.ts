@@ -8,7 +8,7 @@ export const GRID_STEP = 20
 export const SNAP_PX = 12
 export const GHOST_BREAK_PX = 28
 export const DRAG_THRESHOLD_PX = 5
-export const DEFAULT_OPENING_WIDTH = 36
+export const DEFAULT_OPENING_WIDTH = 80
 export const WHEEL_MS = 400
 /** Пауза, после которой ряд ширины проёма снова начинается с сантиметра. */
 export const OPENING_SERIES_MS = 500

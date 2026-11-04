@@ -29,6 +29,8 @@ import {
   setOpeningWidth,
   setPartition,
   setThickness,
+  setWallSide,
+  setWallSplit,
   splitWallAt,
   thicknessAlongGhost,
   translateVertices,
@@ -83,7 +85,7 @@ import { OBJECTS, sameLegendFilter } from '../objects/catalog'
 import { localToWorld, nearestOnContour, resizedFrame, worldToLocal } from '../objects/placement'
 import { anchorAt, computePreview, incidentWallIds } from '../geometry/preview'
 import { snapPoint, type SnapHit } from '../geometry/snap'
-import { wallEnds } from '../geometry/walls'
+import { innerIsLeft, wallEnds, wallSplit } from '../geometry/walls'
 import { pushSnap, takeSnap, type HistorySnap } from '../history'
 import type { MapSnapshot } from '../storage'
 import type { Access, Document, DoorSide, Floor, Hinge, LegendFilter, ObjectKind, OpeningKind, Point, RoomMark, RoomMarkPart, Selection, StairDirection, View } from '../types'
@@ -490,6 +492,53 @@ export function changeWallThickness(state: EditorState, editing: boolean, wallId
   })
 }
 
+/** Галочка «По сторонам»: одно поле толщины или два, внутрь и наружу. */
+export function changeWallSplit(state: EditorState, editing: boolean, wallId: string, split: boolean): EditorState {
+  return editFloor(state, editing, (floor) => {
+    if (!floor.walls.some((item) => item.id === wallId)) return null
+    return setWallSplit(floor, wallId, split)
+  })
+}
+
+export function changeWallSide(
+  state: EditorState,
+  editing: boolean,
+  wallId: string,
+  side: 'inner' | 'outer',
+  value: number,
+): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const wall = floor.walls.find((item) => item.id === wallId)
+    if (!wall || !wallSplit(wall)) return null
+    const leftSide = innerIsLeft(floor, wall)
+    const onLeft = side === 'inner' ? leftSide : !leftSide
+    return setWallSide(floor, wallId, onLeft ? 'left' : 'right', value)
+  })
+}
+
+/** Колесо над полем «Внутрь» или «Наружу». */
+export function wheelWallSide(
+  state: EditorState,
+  editing: boolean,
+  wallId: string,
+  side: 'inner' | 'outer',
+  deltaY: number,
+): EditorState {
+  if (!editing || deltaY === 0) return state
+  const floor = activeFloor(state)
+  const wall = floor.walls.find((item) => item.id === wallId)
+  if (!wall || !wallSplit(wall)) return state
+  const dir: 1 | -1 = deltaY > 0 ? -1 : 1
+  const leftSide = innerIsLeft(floor, wall)
+  const onLeft = side === 'inner' ? leftSide : !leftSide
+  const current = onLeft ? wall.left! : wall.right!
+  const nextFloor = setWallSide(floor, wall.id, onLeft ? 'left' : 'right', current + dir)
+  const applied = nextFloor.walls.find((item) => item.id === wall.id)
+  const appliedValue = applied && (onLeft ? applied.left : applied.right)
+  if (appliedValue == null || appliedValue === current) return state
+  return finishWheel(state, paint(state, nextFloor), `wall:${wall.id}:${side}`, WHEEL_MS)
+}
+
 export function changeOpeningWidth(state: EditorState, editing: boolean, openingId: string, width: number): EditorState {
   return editFloor(state, editing, (floor) => {
     if (!floor.openings.some((item) => item.id === openingId)) return null
@@ -741,9 +790,21 @@ export function onPointerMove(state: EditorState, info: PointerInfo, editing: bo
   if (!next.gesture && info.pointerType !== 'touch') {
     next = next.decor
       ? { ...next, hover: null, decorHover: decorHoverAt(next, world) }
-      : { ...next, hover: hoverAt(next, world, editing) }
+      : { ...next, hover: keepHover(hoverAt(next, world, editing), state.hover) }
   }
   return next
+}
+
+function keepHover(next: Hover | null, previous: Hover | null): Hover | null {
+  return sameHover(next, previous) ? previous : next
+}
+
+function sameHover(a: Hover | null, b: Hover | null): boolean {
+  if (a === b) return true
+  if (!a || !b || a.kind !== b.kind) return false
+  if (a.kind === 'handle' && b.kind === 'handle') return a.handle === b.handle
+  if (a.kind === 'chair' && b.kind === 'chair') return a.objectId === b.objectId && a.chairId === b.chairId
+  return 'id' in a && 'id' in b && a.id === b.id
 }
 
 function hoverAt(state: EditorState, world: Point, editing: boolean): Hover | null {

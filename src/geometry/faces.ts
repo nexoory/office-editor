@@ -141,7 +141,18 @@ export function ringPoints(floor: Floor, ids: string[]): Point[] {
   return points
 }
 
+const analysisCache = new WeakMap<Floor, Analysis>()
+
+/** Грани этажа. Этажи не мутируют на месте, поэтому результат живёт вместе с объектом. */
 export function analyze(floor: Floor): Analysis {
+  const cached = analysisCache.get(floor)
+  if (cached) return cached
+  const analysis = computeAnalysis(floor)
+  analysisCache.set(floor, analysis)
+  return analysis
+}
+
+function computeAnalysis(floor: Floor): Analysis {
   const bounded = walkCycles(floor).filter((cycle) => cycle.area > 1e-4)
   const wallFaces = new Map<string, number[]>()
   const drafts = bounded.map((cycle, index) => {

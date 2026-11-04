@@ -1,6 +1,17 @@
 export type Vertex = { id: string; x: number; y: number }
 
-export type Wall = { id: string; a: string; b: string; thickness: number; partition?: boolean }
+export type Wall = {
+  id: string
+  a: string
+  b: string
+  /** Полная толщина. Если заданы left и right, это их сумма, а ось остаётся между вершинами. */
+  thickness: number
+  /** Смещение влево от направления a → b. Вместе с right заменяет симметричную толщину. */
+  left?: number
+  /** Смещение вправо от направления a → b. */
+  right?: number
+  partition?: boolean
+}
 
 export type OpeningKind = 'passage' | 'window' | 'door'
 

@@ -1,5 +1,43 @@
+import { analyze } from './faces'
 import type { Floor, OpeningKind, Point, Wall } from '../types'
-import { add, dist, left, lineIntersect, mul, norm, sub } from './math'
+import { add, cross, dist, left, lineIntersect, mul, norm, sub } from './math'
+
+/** Смещения от оси: влево и вправо по ходу от a к b. Без пары полей — поровну. */
+export function wallBias(wall: Pick<Wall, 'thickness' | 'left' | 'right'>): { left: number; right: number } {
+  if (typeof wall.left === 'number' && typeof wall.right === 'number') {
+    return { left: Math.max(0, wall.left), right: Math.max(0, wall.right) }
+  }
+  const half = Math.max(0, wall.thickness) / 2
+  return { left: half, right: half }
+}
+
+export function wallSplit(wall: Pick<Wall, 'left' | 'right'>): boolean {
+  return typeof wall.left === 'number' && typeof wall.right === 'number'
+}
+
+/** Куда от оси смотрит помещение. Если их два, внутрь — в меньшее. Без помещения внутрь слева по ходу стены. */
+export function innerIsLeft(floor: Floor, wall: Wall): boolean {
+  let best: { left: boolean; area: number } | null = null
+  for (const face of analyze(floor).faces) {
+    const ids = face.vertexIds
+    for (let index = 0; index < ids.length; index++) {
+      const from = ids[index]
+      const to = ids[(index + 1) % ids.length]
+      const leftSide = from === wall.a && to === wall.b
+      const rightSide = from === wall.b && to === wall.a
+      if (!leftSide && !rightSide) continue
+      if (!best || face.area < best.area) best = { left: leftSide, area: face.area }
+    }
+  }
+  return best?.left ?? true
+}
+
+/** Насколько точка отстоит от оси и какой предел толщины с её стороны. */
+export function wallReach(wall: Wall, a: Point, b: Point, point: Point): number {
+  const bias = wallBias(wall)
+  const side = cross(sub(b, a), sub(point, a))
+  return side >= 0 ? bias.left : bias.right
+}
 
 export type WallSolid = { wallId: string; points: Point[] }
 export type WallCut = { wallId: string; openingId: string; kind: OpeningKind; points: Point[]; a: Point; b: Point }
@@ -15,8 +53,18 @@ export type WallGraphics = {
 
 type EndCap = { right: Point; left: Point }
 
+const vertexIndexCache = new WeakMap<Floor, Map<string, Point>>()
+
+function vertexIndex(floor: Floor): Map<string, Point> {
+  const cached = vertexIndexCache.get(floor)
+  if (cached) return cached
+  const index = new Map(floor.vertices.map((vertex) => [vertex.id, vertex]))
+  vertexIndexCache.set(floor, index)
+  return index
+}
+
 function vertexOf(floor: Floor, id: string) {
-  return floor.vertices.find((vertex) => vertex.id === id)
+  return vertexIndex(floor).get(id)
 }
 
 export function wallEnds(floor: Floor, wall: Wall): { a: Point; b: Point } | null {
@@ -31,28 +79,47 @@ export function wallLengthOf(floor: Floor, wall: Wall): number {
   return ends ? dist(ends.a, ends.b) : 0
 }
 
-function incident(floor: Floor, vertexId: string): { wall: Wall; other: Point; otherId: string }[] {
-  const out: { wall: Wall; other: Point; otherId: string }[] = []
+type Incident = { wall: Wall; other: Point; otherId: string }
+
+function incidentIndex(floor: Floor): Map<string, Incident[]> {
+  const pos = vertexIndex(floor)
+  const map = new Map<string, Incident[]>()
+  for (const vertex of floor.vertices) map.set(vertex.id, [])
   for (const wall of floor.walls) {
-    const ends = wallEnds(floor, wall)
-    if (!ends) continue
-    if (wall.a === vertexId) out.push({ wall, other: ends.b, otherId: wall.b })
-    else if (wall.b === vertexId) out.push({ wall, other: ends.a, otherId: wall.a })
+    const a = pos.get(wall.a)
+    const b = pos.get(wall.b)
+    if (!a || !b) continue
+    map.get(wall.a)?.push({ wall, other: { x: b.x, y: b.y }, otherId: wall.b })
+    map.get(wall.b)?.push({ wall, other: { x: a.x, y: a.y }, otherId: wall.a })
   }
-  return out
+  return map
 }
 
-function capAt(floor: Floor, wall: Wall, vertexId: string, other: Point): EndCap {
+/** Смещение в системе «от этой вершины к другому концу»: локальный левый и правый. */
+function outward(wall: Wall, vertexId: string, localLeft: boolean): number {
+  const bias = wallBias(wall)
+  if (wall.a === vertexId) return localLeft ? bias.left : bias.right
+  return localLeft ? bias.right : bias.left
+}
+
+function capAt(
+  floor: Floor,
+  wall: Wall,
+  vertexId: string,
+  other: Point,
+  incidents: Map<string, Incident[]>,
+): EndCap {
   const vertex = vertexOf(floor, vertexId)
-  const h = wall.thickness / 2
+  const leftW = outward(wall, vertexId, true)
+  const rightW = outward(wall, vertexId, false)
   const fallback = vertex ? { x: vertex.x, y: vertex.y } : other
-  if (!vertex || h <= 0) return { right: fallback, left: fallback }
+  if (!vertex || (leftW <= 0 && rightW <= 0)) return { right: fallback, left: fallback }
   const v = { x: vertex.x, y: vertex.y }
   const d = norm(sub(other, v))
   const n = left(d)
-  const leftP = add(v, mul(n, h))
-  const rightP = add(v, mul(n, -h))
-  const neighbors = incident(floor, vertexId).filter((item) => item.wall.id !== wall.id && item.wall.thickness > 0)
+  const leftP = add(v, mul(n, leftW))
+  const rightP = add(v, mul(n, -rightW))
+  const neighbors = (incidents.get(vertexId) ?? []).filter((item) => item.wall.id !== wall.id && item.wall.thickness > 0)
   if (neighbors.length === 0 || lenSafe(d) === 0) return { right: rightP, left: leftP }
   const angle = Math.atan2(d.y, d.x)
   const ranked = neighbors
@@ -67,8 +134,8 @@ function capAt(floor: Floor, wall: Wall, vertexId: string, other: Point): EndCap
   const ccw = ranked[0]
   const cw = ranked[ranked.length - 1]
   return {
-    left: miter(v, leftP, d, h, ccw.dir, ccw.wall.thickness / 2, true),
-    right: miter(v, rightP, d, h, cw.dir, cw.wall.thickness / 2, false),
+    left: miter(v, leftP, d, leftW, ccw.dir, outward(ccw.wall, vertexId, false), true),
+    right: miter(v, rightP, d, rightW, cw.dir, outward(cw.wall, vertexId, true), false),
   }
 }
 
@@ -98,7 +165,8 @@ function miter(
 function quad(
   a: Point,
   b: Point,
-  thickness: number,
+  leftWidth: number,
+  rightWidth: number,
   s0: number,
   s1: number,
   start: EndCap | null,
@@ -106,20 +174,44 @@ function quad(
 ): Point[] {
   const d = norm(sub(b, a))
   const n = left(d)
-  const h = thickness / 2
   const p0 = add(a, mul(d, s0))
   const p1 = add(a, mul(d, s1))
-  const r0 = start ? start.right : add(p0, mul(n, -h))
-  const l0 = start ? start.left : add(p0, mul(n, h))
-  const r1 = end ? end.right : add(p1, mul(n, -h))
-  const l1 = end ? end.left : add(p1, mul(n, h))
+  const r0 = start ? start.right : add(p0, mul(n, -rightWidth))
+  const l0 = start ? start.left : add(p0, mul(n, leftWidth))
+  const r1 = end ? end.right : add(p1, mul(n, -rightWidth))
+  const l1 = end ? end.left : add(p1, mul(n, leftWidth))
   return [r0, r1, l1, l0]
 }
 
+type GraphicsEntry = { dashed?: WallGraphics; solid?: WallGraphics }
+
+const graphicsCache = new WeakMap<Floor, GraphicsEntry>()
+
 export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics {
+  let entry = graphicsCache.get(floor)
+  if (!entry) {
+    entry = {}
+    graphicsCache.set(floor, entry)
+  }
+  const key = includeDashed ? 'dashed' : 'solid'
+  const cached = entry[key]
+  if (cached) return cached
+  const graphics = buildWallGraphics(floor, includeDashed)
+  entry[key] = graphics
+  return graphics
+}
+
+function buildWallGraphics(floor: Floor, includeDashed: boolean): WallGraphics {
   const solids: WallSolid[] = []
   const cuts: WallCut[] = []
   const dashes: WallDash[] = []
+  const incidents = incidentIndex(floor)
+  const openingsByWall = new Map<string, typeof floor.openings>()
+  for (const opening of floor.openings) {
+    const list = openingsByWall.get(opening.wallId)
+    if (list) list.push(opening)
+    else openingsByWall.set(opening.wallId, [opening])
+  }
 
   for (const wall of floor.walls) {
     const ends = wallEnds(floor, wall)
@@ -130,10 +222,7 @@ export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics
       if (includeDashed) dashes.push({ wallId: wall.id, a: ends.a, b: ends.b })
       continue
     }
-    const openings = floor.openings
-      .filter((opening) => opening.wallId === wall.id)
-      .slice()
-      .sort((p, q) => p.offset - q.offset)
+    const openings = (openingsByWall.get(wall.id) ?? []).slice().sort((p, q) => p.offset - q.offset)
     const gaps: { s: number; e: number; openingId?: string; kind?: OpeningKind }[] = []
     let cursor = 0
     for (const opening of openings) {
@@ -145,18 +234,20 @@ export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics
     }
     if (length > cursor + 1e-4) gaps.push({ s: cursor, e: length })
 
-    const startCap = capAt(floor, wall, wall.a, ends.b)
+    const startCap = capAt(floor, wall, wall.a, ends.b, incidents)
     // The end cap is measured back along the wall, so its left and right are swapped
     // relative to the direction from a to b.
-    const endRaw = capAt(floor, wall, wall.b, ends.a)
+    const endRaw = capAt(floor, wall, wall.b, ends.a, incidents)
     const endCap = { right: endRaw.left, left: endRaw.right }
     for (const gap of gaps) {
       const useStart = gap.s <= 1e-4
       const useEnd = gap.e >= length - 1e-4
+      const bias = wallBias(wall)
       const points = quad(
         ends.a,
         ends.b,
-        wall.thickness,
+        bias.left,
+        bias.right,
         gap.s,
         gap.e,
         useStart ? startCap : null,
@@ -175,22 +266,22 @@ export function wallGraphics(floor: Floor, includeDashed: boolean): WallGraphics
       } else solids.push({ wallId: wall.id, points })
     }
   }
-  return { solids, cuts, dashes, joins: joinPolygons(floor) }
+  return { solids, cuts, dashes, joins: joinPolygons(floor, incidents) }
 }
 
 /** Многоугольник вокруг вершины, который не покрывает ни одна стена. */
-function joinPolygons(floor: Floor): Point[][] {
+function joinPolygons(floor: Floor, incidents: Map<string, Incident[]>): Point[][] {
   const seen = new Set<string>()
   const polygons: Point[][] = []
   for (const wall of floor.walls) {
     for (const vertexId of [wall.a, wall.b]) {
       if (seen.has(vertexId)) continue
       seen.add(vertexId)
-      const arms = incident(floor, vertexId).filter((item) => item.wall.thickness > 0)
+      const arms = (incidents.get(vertexId) ?? []).filter((item) => item.wall.thickness > 0)
       if (arms.length < 3) continue
       const points: Point[] = []
       for (const arm of arms) {
-        const cap = capAt(floor, arm.wall, vertexId, arm.other)
+        const cap = capAt(floor, arm.wall, vertexId, arm.other, incidents)
         points.push(cap.left, cap.right)
       }
       const hull = convexHull(points)

@@ -39,6 +39,8 @@ import {
   changeMarkSize,
   changeRoomIcon,
   changeWallPartition,
+  changeWallSide,
+  changeWallSplit,
   changeWallThickness,
   closeMenu,
   createEditorState,
@@ -91,6 +93,7 @@ import {
   togglePalette,
   undo,
   wheelOpeningWidth,
+  wheelWallSide,
   wheelWallThickness,
   zoomStep,
   type EditorState,
@@ -297,6 +300,13 @@ export function Editor({ editing }: { editing: boolean }) {
     onThickness: (value) => onSelected('wall', (current, edit, selection) => changeWallThickness(current, edit, selection.id, value)),
     onThicknessWheel: (deltaY) =>
       onSelected('wall', (current, edit, selection) => wheelWallThickness(current, edit, selection.id, deltaY)),
+    onSplitSides: (split) => onSelected('wall', (current, edit, selection) => changeWallSplit(current, edit, selection.id, split)),
+    onInner: (value) => onSelected('wall', (current, edit, selection) => changeWallSide(current, edit, selection.id, 'inner', value)),
+    onOuter: (value) => onSelected('wall', (current, edit, selection) => changeWallSide(current, edit, selection.id, 'outer', value)),
+    onInnerWheel: (deltaY) =>
+      onSelected('wall', (current, edit, selection) => wheelWallSide(current, edit, selection.id, 'inner', deltaY)),
+    onOuterWheel: (deltaY) =>
+      onSelected('wall', (current, edit, selection) => wheelWallSide(current, edit, selection.id, 'outer', deltaY)),
     onPartition: (partition) =>
       onSelected('wall', (current, edit, selection) => changeWallPartition(current, edit, selection.id, partition)),
     onOpening: (kind) => update((current, edit) => createOpening(current, edit, kind)),

@@ -194,8 +194,10 @@ function splitWall(floor: Floor, wallId: string, point: Point): { floor: Floor; 
   if (blocked) return null
   const vertexId = newId()
   const partition = wall.partition ? { partition: true as const } : {}
-  const first: Wall = { id: newId(), a: wall.a, b: vertexId, thickness: wall.thickness, ...partition }
-  const second: Wall = { id: newId(), a: vertexId, b: wall.b, thickness: wall.thickness, ...partition }
+  const sides =
+    typeof wall.left === 'number' && typeof wall.right === 'number' ? { left: wall.left, right: wall.right } : {}
+  const first: Wall = { id: newId(), a: wall.a, b: vertexId, thickness: wall.thickness, ...sides, ...partition }
+  const second: Wall = { id: newId(), a: vertexId, b: wall.b, thickness: wall.thickness, ...sides, ...partition }
   const openings = floor.openings.map((opening) => {
     if (opening.wallId !== wall.id) return opening
     if (opening.offset + opening.width <= offset + 1e-4) return { ...opening, wallId: first.id }
@@ -252,6 +254,7 @@ export function addSegmentGraph(
   end: SegmentEnd,
   thickness: number,
   partition = false,
+  sides?: { left: number; right: number },
 ): { floor: Floor; wallId: string; startId: string; endId: string } | null {
   if (dist(start, end) < MIN_SPAN) return null
   if (segmentRejected(floor, start, end)) return null
@@ -282,6 +285,7 @@ export function addSegmentGraph(
           a: resolvedStart.id,
           b: resolvedEnd.id,
           thickness,
+          ...(sides ? { left: sides.left, right: sides.right } : {}),
           ...(partition ? { partition: true as const } : {}),
         },
       ],
@@ -402,7 +406,60 @@ export function setThickness(floor: Floor, wallId: string, thickness: number): F
   const value = Math.max(MIN_THICKNESS, Math.min(MAX_THICKNESS, Math.round(thickness)))
   return {
     ...floor,
-    walls: floor.walls.map((wall) => (wall.id === wallId ? { ...wall, thickness: value } : wall)),
+    walls: floor.walls.map((wall) => {
+      if (wall.id !== wallId) return wall
+      const next: Wall = { ...wall, thickness: value }
+      delete next.left
+      delete next.right
+      return next
+    }),
+  }
+}
+
+function clampSide(value: number): number {
+  if (!Number.isFinite(value)) return MIN_THICKNESS
+  return Math.max(MIN_THICKNESS, Math.min(MAX_THICKNESS, Math.round(value)))
+}
+
+/** Включает два поля, деля текущую толщину пополам, или возвращает одну толщину их суммой. Ось не двигается. */
+export function setWallSplit(floor: Floor, wallId: string, split: boolean): Floor {
+  const wall = floor.walls.find((item) => item.id === wallId)
+  if (!wall) return floor
+  const splitNow = typeof wall.left === 'number' && typeof wall.right === 'number'
+  if (split) {
+    if (splitNow) return floor
+    const total = Math.max(MIN_THICKNESS, Math.round(wall.thickness))
+    const left = Math.floor(total / 2)
+    const right = total - left
+    return {
+      ...floor,
+      walls: floor.walls.map((item) => (item.id === wallId ? { ...item, left, right, thickness: left + right } : item)),
+    }
+  }
+  if (!splitNow) return floor
+  const value = Math.max(MIN_THICKNESS, Math.min(MAX_THICKNESS, Math.round(wall.left! + wall.right!)))
+  return {
+    ...floor,
+    walls: floor.walls.map((item) => {
+      if (item.id !== wallId) return item
+      const next: Wall = { ...item, thickness: value }
+      delete next.left
+      delete next.right
+      return next
+    }),
+  }
+}
+
+/** Меняет одну сторону уже разделённой стены. thickness остаётся суммой сторон. */
+export function setWallSide(floor: Floor, wallId: string, side: 'left' | 'right', value: number): Floor {
+  const wall = floor.walls.find((item) => item.id === wallId)
+  if (!wall || typeof wall.left !== 'number' || typeof wall.right !== 'number') return floor
+  const nextSide = clampSide(value)
+  const left = side === 'left' ? nextSide : wall.left
+  const right = side === 'right' ? nextSide : wall.right
+  return {
+    ...floor,
+    walls: floor.walls.map((item) => (item.id === wallId ? { ...item, left, right, thickness: left + right } : item)),
   }
 }
 
@@ -568,12 +625,17 @@ export function raiseGhostWalls(
     if (onlyWallId && wall.id !== onlyWallId) continue
     const ends = wallEnds(ghost, wall)
     if (!ends) continue
+    const sides =
+      typeof wall.left === 'number' && typeof wall.right === 'number'
+        ? { left: wall.left, right: wall.right }
+        : undefined
     const graph = addSegmentGraph(
       current,
       { x: ends.a.x, y: ends.a.y },
       { x: ends.b.x, y: ends.b.y },
       wall.thickness,
       !!wall.partition,
+      sides,
     )
     if (!graph) continue
     current = graph.floor

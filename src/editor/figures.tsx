@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { doorSwing } from '../geometry/doors'
 import type { PlacedMarker } from '../geometry/lod'
 import { wallEnds } from '../geometry/walls'
@@ -17,7 +18,7 @@ const outline = {
   vectorEffect: 'non-scaling-stroke' as const,
 }
 
-export function FloorObjects(props: { floor: Floor; selection: Selection | null; editing: boolean; filter: LegendFilter | null }) {
+export const FloorObjects = memo(function FloorObjects(props: { floor: Floor; selection: Selection | null; editing: boolean; filter: LegendFilter | null }) {
   return (
     <g pointerEvents="none">
       {props.floor.objects.map((object) => (
@@ -65,10 +66,10 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null;
       ))}
     </g>
   )
-}
+})
 
 /** Маркеры поверх чертежа: постоянный экранный размер, всегда стоят прямо. */
-export function MarkerLayer(props: { markers: PlacedMarker[]; zoom: number }) {
+export const MarkerLayer = memo(function MarkerLayer(props: { markers: PlacedMarker[]; zoom: number }) {
   return (
     <g pointerEvents="none">
       {props.markers.map((marker) => (
@@ -85,9 +86,9 @@ export function MarkerLayer(props: { markers: PlacedMarker[]; zoom: number }) {
       ))}
     </g>
   )
-}
+})
 
-export function ObjectHandles(props: { object: PlanObject; zoom: number; active: ObjectHandle | null }) {
+export const ObjectHandles = memo(function ObjectHandles(props: { object: PlanObject; zoom: number; active: ObjectHandle | null }) {
   const { object, zoom } = props
   const points = handlePoints(object, zoom)
   const r = HANDLE_R_PX / zoom
@@ -124,7 +125,7 @@ export function ObjectHandles(props: { object: PlanObject; zoom: number; active:
       />
     </g>
   )
-}
+})
 
 export function PlacementGhost(props: { kind: ObjectKind; x: number; y: number; zoom: number }) {
   const spec = OBJECTS[props.kind]
@@ -147,7 +148,7 @@ export function PlacementGhost(props: { kind: ObjectKind; x: number; y: number; 
   )
 }
 
-export function DoorLeaves(props: { floor: Floor; zoom: number; selectedId: string | null }) {
+export const DoorLeaves = memo(function DoorLeaves(props: { floor: Floor; zoom: number; selectedId: string | null }) {
   return (
     <g pointerEvents="none">
       {props.floor.walls.flatMap((wall) => {
@@ -190,4 +191,4 @@ export function DoorLeaves(props: { floor: Floor; zoom: number; selectedId: stri
       })}
     </g>
   )
-}
+})

@@ -24,13 +24,13 @@ import { formatLength, formatMeters } from '../geometry/formatLength'
 import { selectionAnchor } from '../geometry/hitTest'
 import { floorArea, floorShape } from '../geometry/roomShape'
 import { marksOf } from '../geometry/roomMarks'
-import { wallEnds, wallLengthOf } from '../geometry/walls'
+import { innerIsLeft, wallEnds, wallLengthOf, wallSplit } from '../geometry/walls'
 import { CATEGORY_NAME, CHAIR_NAME, categoryOf, chairsOf, interestDisplayName, objectName } from '../objects/catalog'
 import { RoomGlyph, roomIconName } from '../objects/icons'
 import { accessLook, MarkerIcon, objectLook } from '../objects/markers'
 import { chairPose } from '../objects/placement'
 import { roomFill, roomInk, theme } from '../theme'
-import type { Access, DoorSide, Floor, Hinge, Opening, Point, RoomMarkPart, Selection, View } from '../types'
+import type { Access, DoorSide, Floor, Hinge, Opening, Point, RoomMarkPart, Selection, View, Wall } from '../types'
 import { Glyph } from './Glyph'
 import { IconSelect } from './IconPicker'
 import { ObjectFields, type ObjectFieldActions } from './ObjectFields'
@@ -50,6 +50,11 @@ export type InspectorActions = ObjectFieldActions & {
   onReveal: (dy: number) => void
   onThickness: (value: number) => void
   onThicknessWheel: (deltaY: number) => void
+  onSplitSides: (split: boolean) => void
+  onInner: (value: number) => void
+  onOuter: (value: number) => void
+  onInnerWheel: (deltaY: number) => void
+  onOuterWheel: (deltaY: number) => void
   onPartition: (partition: boolean) => void
   onOpening: (kind: 'passage' | 'window') => void
   onOpeningWidth: (value: number) => void
@@ -304,19 +309,7 @@ function describe(
       subtitle: formatLength(wallLengthOf(floor, wall)),
       body: (
         <section className="card-group">
-          <Field label="Толщина">
-            <NumberField
-              label="Толщина"
-              unit="см"
-              value={wall.thickness}
-              step={1}
-              format={(value) => String(Math.round(value))}
-              parse={parseNumber}
-              onFocus={actions.onTextFocus}
-              onCommit={actions.onThickness}
-              onWheel={(deltaY) => actions.onThicknessWheel(deltaY)}
-            />
-          </Field>
+          <WallThickness wall={wall} floor={floor} actions={actions} />
           <Field label="Перегородка">
             <Switch label="Перегородка" checked={!!wall.partition} onChange={actions.onPartition} />
           </Field>
@@ -344,6 +337,49 @@ function describe(
     subtitle: formatLength(opening.width),
     body: <OpeningSection opening={opening} actions={actions} />,
   }
+}
+
+function WallThickness(props: { wall: Wall; floor: Floor; actions: InspectorActions }) {
+  const { wall, floor, actions } = props
+  const split = wallSplit(wall)
+  const intoLeft = split ? innerIsLeft(floor, wall) : true
+  const inner = intoLeft ? wall.left! : wall.right!
+  const outer = intoLeft ? wall.right! : wall.left!
+  const field = (
+    label: string,
+    value: number,
+    onCommit: (value: number) => void,
+    onWheel: (deltaY: number) => void,
+  ) => (
+    <Field label={label}>
+      <NumberField
+        label={label}
+        unit="см"
+        value={value}
+        step={1}
+        format={(item) => String(Math.round(item))}
+        parse={parseNumber}
+        onFocus={actions.onTextFocus}
+        onCommit={onCommit}
+        onWheel={onWheel}
+      />
+    </Field>
+  )
+  return (
+    <>
+      {split ? (
+        <>
+          {field('Внутрь', inner, actions.onInner, actions.onInnerWheel)}
+          {field('Наружу', outer, actions.onOuter, actions.onOuterWheel)}
+        </>
+      ) : (
+        field('Толщина', wall.thickness, actions.onThickness, actions.onThicknessWheel)
+      )}
+      <Field label="По сторонам">
+        <Switch label="По сторонам" checked={split} onChange={actions.onSplitSides} />
+      </Field>
+    </>
+  )
 }
 
 function parseNumber(text: string): number | null {
