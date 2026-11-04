@@ -38,19 +38,57 @@ function readView(value: unknown): View | null {
   return { panX: view.panX, panY: view.panY, zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.zoom)) }
 }
 
+function snapshotFrom(
+  document: Document,
+  activeFloorId: unknown,
+  view: unknown,
+  fallbackView: View | null,
+): MapSnapshot | null {
+  const resolved = readView(view) ?? fallbackView
+  if (!resolved) return null
+  const id =
+    typeof activeFloorId === 'string' && document.floors.some((floor) => floor.id === activeFloorId)
+      ? activeFloorId
+      : document.floors[0].id
+  return { document, activeFloorId: id, view: resolved }
+}
+
+function documentOf(value: unknown): Document | null {
+  if (!value || typeof value !== 'object') return null
+  const nested = (value as { document?: unknown }).document
+  if (isDocument(nested)) return nested
+  return isDocument(value) ? value : null
+}
+
+/** Снимок localStorage: только версия 1 и с видом. */
+export function parseStoredMap(value: unknown): MapSnapshot | null {
+  if (!value || typeof value !== 'object') return null
+  const stored = value as StoredMap
+  if (stored.version !== 1 || !isDocument(stored.document)) return null
+  return snapshotFrom(stored.document, stored.activeFloorId, stored.view, null)
+}
+
+/** Файл импорта: снимок версии 1 или чертёж без вида. Без вида остаётся текущий. */
+export function parseImportedMap(value: unknown, fallbackView: View): MapSnapshot | null {
+  if (!value || typeof value !== 'object') return null
+  if ('version' in value && (value as { version?: unknown }).version !== 1) return null
+  const document = documentOf(value)
+  if (!document) return null
+  const source = value as { activeFloorId?: unknown; view?: unknown }
+  return snapshotFrom(document, source.activeFloorId, source.view, fallbackView)
+}
+
+export function serializeMap(snapshot: MapSnapshot): string {
+  const stored: StoredMap = { version: 1, ...snapshot }
+  return JSON.stringify(stored, null, 2)
+}
+
 /** Чертёж из localStorage. Битая запись не мешает открыть пустую карту. */
 export function loadMap(): MapSnapshot | null {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return null
-    const stored = JSON.parse(raw) as StoredMap
-    if (stored?.version !== 1 || !isDocument(stored.document)) return null
-    const view = readView(stored.view)
-    if (!view) return null
-    const activeFloorId = stored.document.floors.some((floor) => floor.id === stored.activeFloorId)
-      ? stored.activeFloorId
-      : stored.document.floors[0].id
-    return { document: stored.document, activeFloorId, view }
+    return parseStoredMap(JSON.parse(raw) as unknown)
   } catch {
     return null
   }

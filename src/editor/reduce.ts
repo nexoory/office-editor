@@ -45,7 +45,7 @@ import {
   translateProbes,
 } from '../geometry/align'
 import { layoutOk, movedWallIds } from '../geometry/collide'
-import { ringPoints, sameIds } from '../geometry/faces'
+import { analyze, ringPoints, sameIds } from '../geometry/faces'
 import { hitGhostWall, hitTest, selectionAnchor, type Hit } from '../geometry/hitTest'
 import { dist, dot, pointInRegion } from '../geometry/math'
 import { MARK_MAX, MARK_MIN, markAt, markHandleAt, marksOf, type ResolvedMarks } from '../geometry/roomMarks'
@@ -71,6 +71,7 @@ import {
   setObjectSymbol,
   setObjectDirection,
   setObjectLength,
+  setObjectName,
   setObjectNote,
   setObjectStep,
   setObjectWidth,
@@ -78,12 +79,13 @@ import {
   setRoomIcon,
   setRoomMarks,
 } from '../objects/edit'
-import { OBJECTS } from '../objects/catalog'
+import { OBJECTS, sameLegendFilter } from '../objects/catalog'
 import { localToWorld, nearestOnContour, resizedFrame, worldToLocal } from '../objects/placement'
 import { anchorAt, computePreview, incidentWallIds } from '../geometry/preview'
 import { snapPoint, type SnapHit } from '../geometry/snap'
 import { wallEnds } from '../geometry/walls'
 import { pushSnap, takeSnap, type HistorySnap } from '../history'
+import type { MapSnapshot } from '../storage'
 import type { Access, Document, DoorSide, Floor, Hinge, LegendFilter, ObjectKind, OpeningKind, Point, RoomMark, RoomMarkPart, Selection, StairDirection, View } from '../types'
 
 export type { PointerInfo, Tool } from './input'
@@ -337,8 +339,35 @@ export function addFloor(state: EditorState, editing: boolean, delta: -1 | 1): E
   return remember(state, next)
 }
 
+function floorIsEmpty(floor: Floor): boolean {
+  return (
+    floor.vertices.length === 0 &&
+    floor.walls.length === 0 &&
+    floor.openings.length === 0 &&
+    floor.rooms.length === 0 &&
+    floor.objects.length === 0
+  )
+}
+
 export function removeFloor(state: EditorState, editing: boolean): EditorState {
-  if (!editing || state.document.floors.length <= 1) return state
+  if (!editing) return state
+  if (state.document.floors.length <= 1) {
+    const floor = activeFloor(state)
+    if (floorIsEmpty(floor)) return state
+    const cleared: Floor = { ...floor, vertices: [], walls: [], openings: [], rooms: [], objects: [] }
+    const next = abortGesture({
+      ...state,
+      selection: null,
+      legendFilter: null,
+      placing: null,
+      menu: null,
+      hover: null,
+      decor: null,
+      decorHover: null,
+      renaming: null,
+    })
+    return remember(state, paint(next, cleared))
+  }
   const index = state.document.floors.findIndex((floor) => floor.id === state.activeFloorId)
   const below = state.document.floors[index - 1]
   const above = state.document.floors[index + 1]
@@ -1162,6 +1191,7 @@ function commitChain(state: EditorState, world: Point, shift: boolean, alt: bool
     free: alt,
   })
   if (!preview.preview.valid) return { ...state, axisLock: preview.lockWallId }
+  const before = activeFloor(state)
   const committed = commitSegment(state, chain[chain.length - 1], preview.preview.end)
   if (!committed) return state
   const floor = activeFloor(committed.state)
@@ -1169,7 +1199,8 @@ function commitChain(state: EditorState, world: Point, shift: boolean, alt: bool
   const endVertex = floor.vertices.find((vertex) => vertex.id === committed.endId)
   const points = chain.slice()
   if (startVertex) points[points.length - 1] = { x: startVertex.x, y: startVertex.y, vertexId: startVertex.id }
-  if (preview.preview.closing || (endVertex && chain[0].vertexId === endVertex.id && chain.length >= 3)) {
+  const enclosed = analyze(floor).faces.length > analyze(before).faces.length
+  if (enclosed || preview.preview.closing || (endVertex && chain[0].vertexId === endVertex.id && chain.length >= 3)) {
     return remember(state, { ...committed.state, chain: null, axisLock: null, gesture: null, selection: null })
   }
   const endPoint: SegmentEnd = endVertex
@@ -1284,6 +1315,7 @@ export function endPlace(
   return remember(state, {
     ...paint(state, placed.floor),
     placing: null,
+    paletteOpen: false,
     selection: { kind: 'object', id: placed.id },
   })
 }
@@ -1301,6 +1333,7 @@ export function setBrowsing(state: EditorState, browsing: boolean): EditorState 
     browsing,
     selection,
     paletteOpen: browsing ? false : state.paletteOpen,
+    legendFilter: browsing ? state.legendFilter : null,
     placing: null,
     menu: null,
     hover: null,
@@ -1309,9 +1342,30 @@ export function setBrowsing(state: EditorState, browsing: boolean): EditorState 
   }
 }
 
-export function setLegendFilter(state: EditorState, kind: LegendFilter | null): EditorState {
-  if (kind === null || state.legendFilter === kind) return { ...state, legendFilter: null }
-  return { ...state, legendFilter: kind }
+export function setLegendFilter(state: EditorState, filter: LegendFilter | null): EditorState {
+  if (filter === null || sameLegendFilter(state.legendFilter, filter)) return { ...state, legendFilter: null }
+  return { ...state, legendFilter: filter }
+}
+
+/** Заменяет чертёж снимком из файла и оставляет шаг в истории. */
+export function importMap(state: EditorState, editing: boolean, snapshot: MapSnapshot): EditorState {
+  if (!editing) return state
+  const cleared = abortGesture(state)
+  return remember(state, {
+    ...cleared,
+    document: snapshot.document,
+    activeFloorId: snapshot.activeFloorId,
+    view: snapshot.view,
+    selection: null,
+    legendFilter: null,
+    placing: null,
+    paletteOpen: false,
+    menu: null,
+    hover: null,
+    decor: null,
+    decorHover: null,
+    renaming: null,
+  })
 }
 
 type Box = { minX: number; minY: number; maxX: number; maxY: number }
@@ -1515,6 +1569,27 @@ export function menuAddOpening(state: EditorState, editing: boolean, kind: 'pass
   const created = nextFloor.openings.find((opening) => !before.has(opening.id))
   if (!created) return closeMenu(state)
   return remember(state, { ...paint(state, nextFloor), menu: null, selection: { kind: 'opening', id: created.id } })
+}
+
+/** Ближайший конец с большим числом стен остаётся, второй поворачивается к 0°, 45°, 90°… */
+export function menuAlignWall(state: EditorState, editing: boolean): EditorState {
+  const menu = state.menu
+  if (!editing || menu?.hit.kind !== 'wall') return closeMenu(state)
+  const wallId = menu.hit.id
+  const floor = activeFloor(state)
+  const wall = floor.walls.find((item) => item.id === wallId)
+  const ends = wall && wallEnds(floor, wall)
+  if (!wall || !ends) return closeMenu(state)
+  const links = (id: string) => floor.walls.filter((item) => item.a === id || item.b === id).length
+  const anchorId = links(wall.b) > links(wall.a) ? wall.b : wall.a
+  const movingId = anchorId === wall.a ? wall.b : wall.a
+  const origin = anchorId === wall.a ? ends.a : ends.b
+  const target = movingId === wall.b ? ends.b : ends.a
+  const nextPoint = constrainAngle(origin, target)
+  if (dist(nextPoint, target) <= 0.5) return closeMenu(state)
+  const moved = vertexMove(floor, movingId, nextPoint, captureFractions(floor, incidentWallIds(floor, movingId)))
+  if (!moved) return closeMenu(state)
+  return remember(state, { ...paint(state, moved), menu: null, selection: { kind: 'wall', id: wall.id } })
 }
 
 export function menuSplitWall(state: EditorState, editing: boolean): EditorState {
@@ -1757,6 +1832,14 @@ export function changeObjectNote(state: EditorState, editing: boolean, id: strin
     const object = floor.objects.find((item) => item.id === id)
     if (!object || object.note === note) return null
     return setObjectNote(floor, id, note)
+  })
+}
+
+export function changeObjectName(state: EditorState, editing: boolean, id: string, name: string): EditorState {
+  return editFloor(state, editing, (floor) => {
+    const object = floor.objects.find((item) => item.id === id)
+    if (!object || object.kind !== 'interest' || (object.name ?? '') === name) return null
+    return setObjectName(floor, id, name)
   })
 }
 

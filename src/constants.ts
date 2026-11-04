@@ -41,7 +41,5 @@ export const MARKER_DOT_PX = 10
 /** Радиус нажатия по маркеру в пикселях экрана: мышь и палец. */
 export const MARKER_HIT_PX = 17
 export const MARKER_HIT_TOUCH_PX = 24
-/** Марш мельче этого на экране получает маркер навигации. */
-export const STAIR_MARKER_PX = 56
 export const CHAIR_LENGTH = 45
 export const CHAIR_WIDTH = 40

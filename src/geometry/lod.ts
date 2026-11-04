@@ -1,5 +1,5 @@
-import { LOD_DOT_ZOOM, LOD_LABEL_ZOOM, MARKER_PX, STAIR_MARKER_PX } from '../constants'
-import { CATEGORY_PRIORITY, categoryOf, objectName } from '../objects/catalog'
+import { LOD_DOT_ZOOM, LOD_LABEL_ZOOM, MARKER_PX } from '../constants'
+import { CATEGORY_PRIORITY, categoryOf, objectMatchesLegend, objectName } from '../objects/catalog'
 import { theme } from '../theme'
 import { accessLook, MARKER_LABEL_FONT, MARKER_LABEL_GAP, objectLook, type MarkerLevel, type MarkerLook } from '../objects/markers'
 import type { Floor, LegendFilter, PlanObject, Point, Selection } from '../types'
@@ -35,18 +35,10 @@ export function baseLevel(zoom: number): MarkerLevel {
   return 'label'
 }
 
-/** Лестница получает маркер, только пока её ступени на экране уже не читаются. */
-export function stairNeedsMarker(object: PlanObject, zoom: number): boolean {
-  return Math.min(object.length, object.width) * zoom < STAIR_MARKER_PX
-}
-
-export function hasMarker(object: PlanObject, zoom: number): boolean {
-  return object.kind !== 'stair' || stairNeedsMarker(object, zoom)
-}
-
 function objectLabel(object: PlanObject): string {
   const note = object.note.trim().split('\n')[0] ?? ''
-  const text = note || objectName(object.kind)
+  const named = object.kind === 'interest' ? (object.name ?? '').trim() : ''
+  const text = named || note || objectName(object.kind)
   return text.length > LABEL_MAX ? `${text.slice(0, LABEL_MAX - 1)}…` : text
 }
 
@@ -92,7 +84,6 @@ export function layoutMarkers(input: {
   const candidates: Candidate[] = []
 
   for (const object of floor.objects) {
-    if (!hasMarker(object, zoom)) continue
     const selected = input.selection?.kind === 'object' && input.selection.id === object.id
     candidates.push({
       key: object.id,
@@ -101,7 +92,7 @@ export function layoutMarkers(input: {
       look: objectLook(object),
       size: MARKER_PX,
       label: objectLabel(object),
-      muted: !!filter && filter !== object.kind,
+      muted: !objectMatchesLegend(object, filter),
       selected,
       hovered: input.hover?.kind === 'object' && input.hover.id === object.id,
       priority: CATEGORY_PRIORITY[categoryOf(object.kind)],
@@ -115,7 +106,7 @@ export function layoutMarkers(input: {
     const wall = floor.walls.find((item) => item.id === opening.wallId)
     const ends = wall && wall.thickness > 0 ? wallEnds(floor, wall) : null
     if (!ends) continue
-    const matched = filter === opening.access
+    const matched = filter?.type === 'access' && filter.access === opening.access
     const along = norm(sub(ends.b, ends.a))
     candidates.push({
       key: opening.id,

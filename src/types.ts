@@ -78,6 +78,8 @@ export type PlanObject = {
   direction?: StairDirection
   chairs?: Chair[]
   symbol?: string
+  /** Своё имя только у «Прочего». Пустое и отсутствующее — одно и то же. */
+  name?: string
 }
 
 export type Floor = {
@@ -100,8 +102,15 @@ export type Selection =
   | { kind: 'object'; id: string }
   | { kind: 'chair'; objectId: string; chairId: string }
 
-/** Фильтр легенды: тип предмета или доступ двери. Состояние вида, в документ не пишется. */
-export type LegendFilter = ObjectKind | Exclude<Access, 'none'>
+/**
+ * Фильтр легенды. Лестницы делятся по ходу, «Прочее» — по имени.
+ * Состояние вида, в документ не пишется.
+ */
+export type LegendFilter =
+  | { type: 'object'; kind: Exclude<ObjectKind, 'stair' | 'interest'> }
+  | { type: 'stair'; direction: StairDirection }
+  | { type: 'interest'; key: string }
+  | { type: 'access'; access: Exclude<Access, 'none'> }
 
 export type View = { panX: number; panY: number; zoom: number }
 

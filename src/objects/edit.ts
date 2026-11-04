@@ -67,6 +67,10 @@ export function setObjectNote(floor: Floor, id: string, note: string): Floor {
   return mapObject(floor, id, (object) => ({ ...object, note }))
 }
 
+export function setObjectName(floor: Floor, id: string, name: string): Floor {
+  return mapObject(floor, id, (object) => (object.kind === 'interest' ? { ...object, name } : object))
+}
+
 export function addObjectTag(floor: Floor, id: string, tag: string): Floor | null {
   const trimmed = tag.trim()
   if (!trimmed) return null

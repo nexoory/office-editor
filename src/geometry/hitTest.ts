@@ -1,6 +1,5 @@
 import { MARKER_HIT_PX, MARKER_HIT_TOUCH_PX } from '../constants'
 import { chairsOf } from '../objects/catalog'
-import { hasMarker } from './lod'
 import { chairPose, pointInFrame } from '../objects/placement'
 import type { Floor, Point, Selection } from '../types'
 import { doorSwing } from './doors'
@@ -34,7 +33,6 @@ function hitMarker(floor: Floor, point: Point, zoom: number, touch: boolean): Hi
   const reach = (touch ? MARKER_HIT_TOUCH_PX : MARKER_HIT_PX) / zoom
   let best: { id: string; score: number } | null = null
   for (const object of floor.objects) {
-    if (!hasMarker(object, zoom)) continue
     const score = dist(point, object)
     if (score <= reach && (!best || score < best.score)) best = { id: object.id, score }
   }

@@ -8,15 +8,15 @@ import { findIcon } from './iconList'
 
 export type MarkerLevel = 'dot' | 'badge' | 'label'
 
-export type MarkerLook = { color: string; symbol: string }
+export type MarkerLook = { color: string; symbol: string; flip?: boolean }
 
 export const MARKER_LABEL_FONT = `600 12px ${UI_FONT}`
 export const MARKER_LABEL_GAP = 5
 const SELECTED_SCALE = 1.15
 
-export function objectLook(object: Pick<PlanObject, 'kind' | 'color' | 'symbol'>): MarkerLook {
+export function objectLook(object: Pick<PlanObject, 'kind' | 'color' | 'symbol' | 'direction'>): MarkerLook {
   const symbol = findIcon(objectSymbol(object)) ? objectSymbol(object) : typeSymbol(object.kind)
-  return { color: objectFill(object), symbol }
+  return { color: objectFill(object), symbol, flip: object.kind === 'stair' && object.direction === 'down' }
 }
 
 export function kindLook(kind: ObjectKind): MarkerLook {
@@ -60,7 +60,11 @@ export function MarkerShape(props: {
       <circle cy={r * 0.08} r={r + 0.75} fill="rgba(24, 22, 18, 0.22)" />
       <circle r={r} fill={theme.markerRing} />
       <circle r={r - ring} fill={look.color} />
-      {icon && <FaIcon icon={icon} size={r * 1.12} color="#fff" />}
+      {icon && (
+        <g transform={look.flip ? 'scale(-1 1)' : undefined}>
+          <FaIcon icon={icon} size={r * 1.12} color="#fff" />
+        </g>
+      )}
       {props.selected && <circle r={r + 2.5} fill="none" stroke={theme.selected} strokeWidth={2.5} />}
       {!props.selected && props.hovered && <circle r={r + 2} fill="none" stroke={theme.selected} strokeOpacity={0.55} strokeWidth={2} />}
       {props.level === 'label' && props.label && (

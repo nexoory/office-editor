@@ -27,6 +27,7 @@ import {
   changeObjectColor,
   changeObjectDirection,
   changeObjectLength,
+  changeObjectName,
   changeObjectNote,
   changeObjectStep,
   changeObjectSymbol,
@@ -52,9 +53,11 @@ import {
   fitSelection,
   ghostFloor,
   menuAddOpening,
+  menuAlignWall,
   menuPlaceObject,
   menuRaiseGhost,
   menuSplitWall,
+  importMap,
   menuStartWall,
   movePlace,
   nudgeSelection,
@@ -68,6 +71,7 @@ import {
   pointerLeave,
   raiseAll,
   redo,
+  removeFloor,
   renameHandled,
   requestRename,
   resetMarks,
@@ -92,7 +96,7 @@ import {
   type EditorState,
   type PointerInfo,
 } from './reduce'
-import { loadMap, saveMap } from '../storage'
+import { loadMap, parseImportedMap, saveMap, serializeMap, type MapSnapshot } from '../storage'
 import type { Selection } from '../types'
 
 type Update = (state: EditorState) => EditorState
@@ -102,9 +106,41 @@ function isMoving(state: EditorState): boolean {
   return !!type && type !== 'pending' && type !== 'pan'
 }
 
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = name
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function downloadMap(snapshot: MapSnapshot) {
+  downloadBlob(new Blob([serializeMap(snapshot)], { type: 'application/json' }), 'map.json')
+}
+
+/** Текущий вид этажа без сетки, ручек и подсветки выбора. */
+function downloadPlanSvg(root: HTMLElement) {
+  const source = root.querySelector('svg.plan-canvas')
+  if (!(source instanceof SVGSVGElement)) return
+  const rect = source.getBoundingClientRect()
+  const width = Math.max(1, Math.round(rect.width))
+  const height = Math.max(1, Math.round(rect.height))
+  const copy = source.cloneNode(true) as SVGSVGElement
+  copy.querySelectorAll('[data-export="omit"]').forEach((node) => node.remove())
+  copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+  copy.setAttribute('width', String(width))
+  copy.setAttribute('height', String(height))
+  copy.setAttribute('viewBox', `0 0 ${width} ${height}`)
+  copy.removeAttribute('class')
+  copy.removeAttribute('style')
+  downloadBlob(new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n${copy.outerHTML}`], { type: 'image/svg+xml' }), 'map.svg')
+}
+
 export function Editor({ editing }: { editing: boolean }) {
   const [state, setState] = useState<EditorState>(() => createEditorState(loadMap()))
   const stageRef = useRef<HTMLDivElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
   const editingRef = useRef(editing)
   const stateRef = useRef(state)
   const canEdit = editing && !state.browsing
@@ -280,6 +316,7 @@ export function Editor({ editing }: { editing: boolean }) {
     onMarkSize: (part, size) => update((current, edit) => changeMarkSize(current, edit, part, size)),
     onMarkReset: () => update(resetMarks),
     onNote: (id, note) => update((current, edit) => changeObjectNote(current, edit, id, note)),
+    onName: (id, name) => update((current, edit) => changeObjectName(current, edit, id, name)),
     onAddTag: (id, tag) => update((current, edit) => changeObjectTag(current, edit, id, tag)),
     onRemoveTag: (id, tag) => update((current, edit) => changeObjectUntag(current, edit, id, tag)),
     onColor: (id, color) => update((current, edit) => changeObjectColor(current, edit, id, color)),
@@ -303,12 +340,26 @@ export function Editor({ editing }: { editing: boolean }) {
     onDelete: () => update((current, edit) => closeMenu(deleteSelection(current, edit))),
     onAddOpening: (kind) => update((current, edit) => menuAddOpening(current, edit, kind)),
     onSplit: () => update(menuSplitWall),
+    onAlign: () => update(menuAlignWall),
     onPartition: (partition) =>
       onSelected('wall', (current, edit, selection) => closeMenu(changeWallPartition(current, edit, selection.id, partition))),
     onOpeningKind: (kind) =>
       onSelected('opening', (current, edit, selection) => closeMenu(changeOpeningKind(current, edit, selection.id, kind))),
     onCopy: () => update(duplicateSelection),
     onRotate: () => update((current, edit) => closeMenu(rotateSelection(current, edit, 1))),
+    onExport: () => {
+      const current = stateRef.current
+      downloadMap({ document: current.document, activeFloorId: current.activeFloorId, view: current.view })
+      setState(closeMenu)
+    },
+    onExportSvg: () => {
+      if (stageRef.current) downloadPlanSvg(stageRef.current)
+      setState(closeMenu)
+    },
+    onImport: () => {
+      setState(closeMenu)
+      fileRef.current?.click()
+    },
     onClose: () => update(closeMenu),
   }
 
@@ -371,6 +422,31 @@ export function Editor({ editing }: { editing: boolean }) {
           editing={canEdit}
           onSwitch={(delta) => setState((current) => switchFloor(current, delta))}
           onAdd={(delta) => update((current, edit) => addFloor(current, edit, delta))}
+          onRemove={() => update((current, edit) => removeFloor(current, edit))}
+        />
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          hidden
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            event.currentTarget.value = ''
+            if (!file) return
+            void file.text().then((text) => {
+              let value: unknown
+              try {
+                value = JSON.parse(text)
+              } catch {
+                return
+              }
+              setState((current) => {
+                const snapshot = parseImportedMap(value, current.view)
+                if (!snapshot) return current
+                return importMap(current, editingRef.current, snapshot)
+              })
+            })
+          }}
         />
         {showInspector && state.selection && (
           <Inspector

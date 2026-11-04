@@ -1,17 +1,6 @@
-import { faArrowRightLong } from '@fortawesome/free-solid-svg-icons'
 import { theme } from '../theme'
 import type { ObjectKind, StairDirection } from '../types'
-import { FaIcon } from './faIcon'
 import { stairDepths } from './placement'
-
-const line = {
-  fill: 'none' as const,
-  stroke: theme.stairLine,
-  strokeWidth: 1.25,
-  vectorEffect: 'non-scaling-stroke' as const,
-  strokeLinecap: 'round' as const,
-  strokeLinejoin: 'round' as const,
-}
 
 /** Габарит предмета — геометрия, а не знак: тонкий контур и едва заметная заливка его цвета. */
 function Footprint(props: { length: number; width: number; color: string; editing: boolean; muted: boolean }) {
@@ -35,31 +24,61 @@ function Footprint(props: { length: number; width: number; color: string; editin
   )
 }
 
-function StairSign(props: { length: number; width: number; step: number; direction: StairDirection }) {
+/** Ступени от локального −x: первая прозрачная, дальше светлеют вверх или темнеют вниз. */
+function StairSign(props: { length: number; width: number; step: number; direction: StairDirection; muted: boolean }) {
   const depths = stairDepths(props.length, props.step)
+  const last = Math.max(depths.length - 1, 1)
+  const tint = props.muted ? theme.markerMuted : props.direction === 'down' ? '#000' : '#fff'
+  const stroke = props.muted ? theme.markerMuted : theme.stairLine
   let cursor = -props.length / 2
+  const treads = depths.map((depth, index) => {
+    const x = cursor
+    cursor += depth
+    return (
+      <rect
+        key={index}
+        x={x}
+        y={-props.width / 2}
+        width={depth}
+        height={props.width}
+        fill={tint}
+        fillOpacity={index === 0 ? 0 : (index / last) * 0.45}
+        stroke="none"
+      />
+    )
+  })
+  cursor = -props.length / 2
   const dividers = depths.slice(0, -1).map((depth, index) => {
     cursor += depth
-    return <line key={index} x1={cursor} y1={-props.width / 2} x2={cursor} y2={props.width / 2} {...line} />
+    return (
+      <line
+        key={index}
+        x1={cursor}
+        y1={-props.width / 2}
+        x2={cursor}
+        y2={props.width / 2}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={1.25}
+        vectorEffect="non-scaling-stroke"
+        strokeLinecap="round"
+      />
+    )
   })
-  const [iconWidth, iconHeight] = faArrowRightLong.icon
-  const scale = Math.min((props.length * 0.72) / iconWidth, (props.width * 0.46) / iconHeight)
-  const arrow = scale * Math.max(iconWidth, iconHeight)
   return (
     <g>
+      {treads}
       <rect
         x={-props.length / 2}
         y={-props.width / 2}
         width={props.length}
         height={props.width}
-        {...line}
-        fill={theme.floor}
-        stroke={theme.wall}
+        fill="none"
+        stroke={props.muted ? theme.markerMuted : theme.wall}
+        strokeWidth={1.25}
+        vectorEffect="non-scaling-stroke"
       />
       {dividers}
-      <g transform={props.direction === 'down' ? 'scale(-1 1)' : undefined}>
-        <FaIcon icon={faArrowRightLong} size={arrow} color={theme.stairLine} halo={theme.floor} haloWidth={Math.max(2, arrow * 0.045)} />
-      </g>
     </g>
   )
 }
@@ -81,6 +100,7 @@ export function SignGraphic(props: {
         width={props.width}
         step={props.step ?? props.length}
         direction={props.direction ?? 'up'}
+        muted={!!props.muted}
       />
     )
   }

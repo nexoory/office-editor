@@ -14,6 +14,7 @@ import { Swatches } from './ui/Swatches'
 export type ObjectFieldActions = {
   onTextFocus: (focused: boolean) => void
   onNote: (id: string, note: string) => void
+  onName: (id: string, name: string) => void
   onAddTag: (id: string, tag: string) => void
   onRemoveTag: (id: string, tag: string) => void
   onColor: (id: string, color: string | null) => void
@@ -112,17 +113,15 @@ export function ObjectFields(props: { object: PlanObject; editing: boolean; acti
             </Field>
           )}
           {shown.has('direction') && (
-            <Field label="Направление">
-              <Segmented
-                label="Направление"
-                value={object.direction ?? 'up'}
-                options={[
-                  { value: 'up', label: 'Вверх' },
-                  { value: 'down', label: 'Вниз' },
-                ]}
-                onChange={(direction) => actions.onDirection(object.id, direction)}
-              />
-            </Field>
+            <Segmented
+              label="Вверх или вниз"
+              value={object.direction ?? 'up'}
+              options={[
+                { value: 'up', label: 'Вверх' },
+                { value: 'down', label: 'Вниз' },
+              ]}
+              onChange={(direction) => actions.onDirection(object.id, direction)}
+            />
           )}
         </section>
       )}
@@ -131,8 +130,19 @@ export function ObjectFields(props: { object: PlanObject; editing: boolean; acti
           <ChairRow object={object} onAdd={() => actions.onAddChair(object.id)} onSelect={(id) => actions.onSelectChair(object.id, id)} />
         </section>
       )}
-      {(shown.has('note') || shown.has('tags')) && (
+      {(shown.has('name') || shown.has('note') || shown.has('tags')) && (
         <section className="card-group">
+          {shown.has('name') && (
+            <Field label="Название">
+              <TextField
+                label="Название"
+                value={object.name ?? ''}
+                placeholder="Нет"
+                onFocus={actions.onTextFocus}
+                onCommit={(name) => actions.onName(object.id, name)}
+              />
+            </Field>
+          )}
           {shown.has('note') && (
             <Field label="Описание">
               <TextField

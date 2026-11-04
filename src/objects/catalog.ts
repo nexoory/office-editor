@@ -1,6 +1,6 @@
 import { CHAIR_LENGTH, CHAIR_WIDTH } from '../constants'
 import { theme } from '../theme'
-import type { ObjectKind, PlanObject, StairDirection } from '../types'
+import type { LegendFilter, ObjectKind, PlanObject, StairDirection } from '../types'
 
 export type ObjectSpec = {
   kind: ObjectKind
@@ -43,7 +43,7 @@ export const OBJECTS: Record<ObjectKind, ObjectSpec> = {
   interest: { kind: 'interest', name: 'Прочее', length: 120, width: 80 },
 }
 
-/** Знак типа. На плане лестница его не рисует: там ступени и стрелка. */
+/** Знак типа. Лестница носит его так же, как остальные предметы. */
 export const TYPE_SYMBOL: Record<ObjectKind, string> = {
   stair: 'stairs',
   table: 'computer',
@@ -136,6 +136,35 @@ export function stairDirectionOf(object: PlanObject): StairDirection {
   return object.direction ?? 'up'
 }
 
+/** Ключ группы «Прочего» в легенде: без краевых пробелов и без учёта регистра. */
+export function interestNameKey(name: string | undefined): string {
+  return (name ?? '').trim().toLowerCase()
+}
+
+/** Подпись «Прочего»: введённое имя или название типа, если имя пустое. */
+export function interestDisplayName(name: string | undefined): string {
+  const trimmed = (name ?? '').trim()
+  return trimmed || objectName('interest')
+}
+
+export function sameLegendFilter(a: LegendFilter | null, b: LegendFilter | null): boolean {
+  if (a === b) return true
+  if (!a || !b || a.type !== b.type) return false
+  if (a.type === 'object' && b.type === 'object') return a.kind === b.kind
+  if (a.type === 'stair' && b.type === 'stair') return a.direction === b.direction
+  if (a.type === 'interest' && b.type === 'interest') return a.key === b.key
+  if (a.type === 'access' && b.type === 'access') return a.access === b.access
+  return false
+}
+
+/** Подходит ли предмет под фильтр легенды. Без фильтра подходят все. */
+export function objectMatchesLegend(object: PlanObject, filter: LegendFilter | null): boolean {
+  if (!filter) return true
+  if (object.kind === 'stair') return filter.type === 'stair' && stairDirectionOf(object) === filter.direction
+  if (object.kind === 'interest') return filter.type === 'interest' && interestNameKey(object.name) === filter.key
+  return filter.type === 'object' && filter.kind === object.kind
+}
+
 export function chairsOf(object: PlanObject) {
   return object.chairs ?? []
 }
@@ -156,6 +185,7 @@ export type ObjectField = {
 
 export const OBJECT_FIELDS: ObjectField[] = [
   { id: 'typeName', control: 'readonly', edit: true, view: true },
+  { id: 'name', control: 'text', edit: true, view: true, kinds: ['interest'] },
   { id: 'note', control: 'text', edit: true, view: true },
   { id: 'tags', control: 'tags', edit: true, view: true },
   { id: 'symbol', control: 'icon', edit: true, view: false, except: ['stair'] },

@@ -238,20 +238,18 @@ export function Canvas(props: {
           if (!room) return null
           const shape = floorShape(floor, face)
           const selected = state.selection?.kind === 'room' && state.selection.id === room.id
+          const d = pathOf(shape.outer, shape.holes)
           return (
-            <path
-              key={room.id}
-              d={pathOf(shape.outer, shape.holes)}
-              fill={roomFill(room.color)}
-              fillRule="evenodd"
-              stroke={selected ? theme.selected : 'none'}
-              strokeWidth={selected ? 2 / zoom : 0}
-              pointerEvents="none"
-            />
+            <g key={room.id}>
+              <path d={d} fill={roomFill(room.color)} fillRule="evenodd" stroke="none" pointerEvents="none" />
+              {selected && (
+                <path data-export="omit" d={d} fill="none" stroke={theme.selected} strokeWidth={2 / zoom} pointerEvents="none" />
+              )}
+            </g>
           )
         })}
         {ghost && ghostGraphics && (
-          <g opacity={0.33} pointerEvents="none">
+          <g data-export="omit" opacity={0.33} pointerEvents="none">
             {ghostGraphics.joins.map((points, index) => (
               <polygon
                 key={`gj${index}`}
@@ -283,34 +281,38 @@ export function Canvas(props: {
             <DoorLeaves floor={ghost} zoom={zoom} selectedId={null} />
           </g>
         )}
-        {ghostGraphics?.dashes.map((dash) => (
-          <line
-            key={dash.wallId}
-            x1={dash.a.x}
-            y1={dash.a.y}
-            x2={dash.b.x}
-            y2={dash.b.y}
-            stroke={theme.ghostDash}
-            strokeWidth={1.25 / zoom}
-            strokeDasharray={`${5 / zoom} ${4 / zoom}`}
-            pointerEvents="none"
-          />
-        ))}
-        {props.editing &&
-          ghost?.vertices.map((vertex) => (
-            <circle
-              key={vertex.id}
-              cx={vertex.x}
-              cy={vertex.y}
-              r={2.6 / zoom}
-              fill={theme.ghostVertex}
+        <g data-export="omit">
+          {ghostGraphics?.dashes.map((dash) => (
+            <line
+              key={dash.wallId}
+              x1={dash.a.x}
+              y1={dash.a.y}
+              x2={dash.b.x}
+              y2={dash.b.y}
+              stroke={theme.ghostDash}
+              strokeWidth={1.25 / zoom}
+              strokeDasharray={`${5 / zoom} ${4 / zoom}`}
               pointerEvents="none"
             />
           ))}
+          {props.editing &&
+            ghost?.vertices.map((vertex) => (
+              <circle
+                key={vertex.id}
+                cx={vertex.x}
+                cy={vertex.y}
+                r={2.6 / zoom}
+                fill={theme.ghostVertex}
+                pointerEvents="none"
+              />
+            ))}
+        </g>
         <RoomMarks marks={marks} rooms={floor.rooms} />
         <FloorObjects floor={floor} selection={state.selection} editing={props.editing} filter={state.legendFilter} />
         {state.placing?.dragging && (
-          <PlacementGhost kind={state.placing.kind} x={state.placing.x} y={state.placing.y} zoom={zoom} />
+          <g data-export="omit">
+            <PlacementGhost kind={state.placing.kind} x={state.placing.x} y={state.placing.y} zoom={zoom} />
+          </g>
         )}
         <g pointerEvents="none">
           {graphics.joins.map((points, index) => (
@@ -323,21 +325,23 @@ export function Canvas(props: {
               strokeLinejoin="round"
             />
           ))}
-          {graphics.solids.map((solid, index) => (
-            <polygon
-              key={`${solid.wallId}-${index}`}
-              points={poly(solid.points)}
-              fill={state.selection?.kind === 'wall' && state.selection.id === solid.wallId ? theme.selected : theme.wall}
-            />
-          ))}
-          {graphics.cuts.map((item) => (
+          {graphics.solids.map((solid, index) => {
+            const selected = state.selection?.kind === 'wall' && state.selection.id === solid.wallId
+            return (
+              <g key={`${solid.wallId}-${index}`}>
+                <polygon points={poly(solid.points)} fill={theme.wall} />
+                {selected && <polygon data-export="omit" points={poly(solid.points)} fill={theme.selected} />}
+              </g>
+            )
+          })}
+          {graphics.cuts.map((item) => {
+            const selected = state.selection?.kind === 'opening' && state.selection.id === item.openingId
+            return (
             <g key={item.openingId}>
-              <polygon
-                points={poly(item.points)}
-                fill={theme.opening}
-                stroke={state.selection?.kind === 'opening' && state.selection.id === item.openingId ? theme.selected : 'none'}
-                strokeWidth={2 / zoom}
-              />
+              <polygon points={poly(item.points)} fill={theme.opening} />
+              {selected && (
+                <polygon data-export="omit" points={poly(item.points)} fill="none" stroke={theme.selected} strokeWidth={2 / zoom} />
+              )}
               {item.kind === 'window' && (
                 <line
                   x1={item.a.x}
@@ -349,43 +353,72 @@ export function Canvas(props: {
                 />
               )}
             </g>
-          ))}
-          {graphics.dashes.map((dash) => (
-            <line
-              key={dash.wallId}
-              x1={dash.a.x}
-              y1={dash.a.y}
-              x2={dash.b.x}
-              y2={dash.b.y}
-              stroke={state.selection?.kind === 'wall' && state.selection.id === dash.wallId ? theme.selected : theme.wall}
-              strokeWidth={1.4 / zoom}
-              strokeDasharray={`${6 / zoom} ${5 / zoom}`}
-            />
-          ))}
+            )
+          })}
+          {graphics.dashes.map((dash) => {
+            const selected = state.selection?.kind === 'wall' && state.selection.id === dash.wallId
+            return (
+              <g key={dash.wallId}>
+                <line
+                  x1={dash.a.x}
+                  y1={dash.a.y}
+                  x2={dash.b.x}
+                  y2={dash.b.y}
+                  stroke={theme.wall}
+                  strokeWidth={1.4 / zoom}
+                  strokeDasharray={`${6 / zoom} ${5 / zoom}`}
+                />
+                {selected && (
+                  <line
+                    data-export="omit"
+                    x1={dash.a.x}
+                    y1={dash.a.y}
+                    x2={dash.b.x}
+                    y2={dash.b.y}
+                    stroke={theme.selected}
+                    strokeWidth={1.4 / zoom}
+                    strokeDasharray={`${6 / zoom} ${5 / zoom}`}
+                  />
+                )}
+              </g>
+            )
+          })}
         </g>
         <DoorLeaves floor={floor} zoom={zoom} selectedId={state.selection?.kind === 'opening' ? state.selection.id : null} />
         <MarkerLayer markers={markers} zoom={zoom} />
-        {props.editing &&
-          floor.vertices.map((vertex) => {
-            const selected = state.selection?.kind === 'vertex' && state.selection.id === vertex.id
-            return (
-              <circle
-                key={vertex.id}
-                cx={vertex.x}
-                cy={vertex.y}
-                r={(selected ? 6 : 3.4) / zoom}
-                fill={selected ? theme.selected : theme.vertex}
-                pointerEvents="none"
-              />
-            )
-          })}
+        {props.editing && (
+          <g data-export="omit">
+            {floor.vertices.map((vertex) => {
+              const selected = state.selection?.kind === 'vertex' && state.selection.id === vertex.id
+              return (
+                <circle
+                  key={vertex.id}
+                  cx={vertex.x}
+                  cy={vertex.y}
+                  r={(selected ? 6 : 3.4) / zoom}
+                  fill={selected ? theme.selected : theme.vertex}
+                  pointerEvents="none"
+                />
+              )
+            })}
+          </g>
+        )}
         {props.editing && decorMarks && (
-          <DecorLayer marks={decorMarks} bounds={bounds} part={state.decor?.part ?? null} hover={state.decorHover} zoom={zoom} />
+          <g data-export="omit">
+            <DecorLayer marks={decorMarks} bounds={bounds} part={state.decor?.part ?? null} hover={state.decorHover} zoom={zoom} />
+          </g>
         )}
-        {hover && <HoverOutline floor={floor} analysis={analysis} hover={hover} selection={state.selection} zoom={zoom} />}
+        {hover && (
+          <g data-export="omit">
+            <HoverOutline floor={floor} analysis={analysis} hover={hover} selection={state.selection} zoom={zoom} />
+          </g>
+        )}
         {handleObject && !busy && (
-          <ObjectHandles object={handleObject} zoom={zoom} active={hover?.kind === 'handle' ? hover.handle : null} />
+          <g data-export="omit">
+            <ObjectHandles object={handleObject} zoom={zoom} active={hover?.kind === 'handle' ? hover.handle : null} />
+          </g>
         )}
+        <g data-export="omit">
         {guides.map((guide, index) => (
           <line
             key={`guide${index}`}
@@ -434,6 +467,7 @@ export function Canvas(props: {
             </text>
           ),
         )}
+        </g>
       </g>
     </svg>
   )
@@ -472,7 +506,7 @@ function Grid(props: { bounds: { x: number; y: number; w: number; h: number }; z
     lines.push(<line key={`h${y}`} x1={bounds.x} y1={y} x2={x1} y2={y} />)
   }
   return (
-    <g stroke={theme.grid} strokeWidth={1 / zoom} pointerEvents="none">
+    <g data-export="omit" stroke={theme.grid} strokeWidth={1 / zoom} pointerEvents="none">
       {lines}
     </g>
   )

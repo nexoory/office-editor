@@ -5,7 +5,11 @@ import {
   faChevronRight,
   faCopy,
   faDoorOpen,
+  faDownload,
   faDrawPolygon,
+  faFileImage,
+  faFileImport,
+  faGripLines,
   faLayerGroup,
   faPen,
   faPlus,
@@ -15,6 +19,8 @@ import {
   faWindowMaximize,
 } from '@fortawesome/free-solid-svg-icons'
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { constrainAngle, dist } from '../geometry/math'
+import { wallEnds } from '../geometry/walls'
 import { OBJECT_ORDER, objectName } from '../objects/catalog'
 import { kindLook, MarkerIcon } from '../objects/markers'
 import type { Floor, ObjectKind } from '../types'
@@ -32,10 +38,14 @@ export type ContextMenuActions = {
   onDelete: () => void
   onAddOpening: (kind: 'passage' | 'window') => void
   onSplit: () => void
+  onAlign: () => void
   onPartition: (partition: boolean) => void
   onOpeningKind: (kind: 'passage' | 'door') => void
   onCopy: () => void
   onRotate: () => void
+  onExport: () => void
+  onExportSvg: () => void
+  onImport: () => void
   onClose: () => void
 }
 
@@ -70,6 +80,9 @@ export function ContextMenu(props: { menu: ContextMenuState; floor: Floor; hasGh
       items.push(
         <MenuItem key="split" icon={faScissors} label="Разделить здесь" disabled={!canSplitAt(floor, wall.id, menu.world)} onClick={actions.onSplit} />,
       )
+      const ends = wallEnds(floor, wall)
+      const straight = !!ends && dist(constrainAngle(ends.a, ends.b), ends.b) <= 0.5
+      items.push(<MenuItem key="align" icon={faGripLines} label="Выровнять" disabled={straight} onClick={actions.onAlign} />)
       items.push(
         <MenuItem key="partition" label="Перегородка" checked={!!wall.partition} onClick={() => actions.onPartition(!wall.partition)} />,
       )
@@ -129,6 +142,12 @@ export function ContextMenu(props: { menu: ContextMenuState; floor: Floor; hasGh
       items.push(<MenuItem key="rename" icon={faPen} label="Переименовать" keys="Enter" onClick={actions.onRename} />)
       items.push(<MenuItem key="decor" icon={faPaintbrush} label="Расположить надпись" onClick={actions.onDecor} />)
       items.push(<MenuItem key="delete" icon={faTrashCan} label="Удалить помещение" keys="Del" danger onClick={actions.onDelete} />)
+    }
+    if (hit.kind === 'empty') {
+      items.push(<MenuSeparator key="io" />)
+      items.push(<MenuItem key="export" icon={faDownload} label="Экспортировать JSON" onClick={actions.onExport} />)
+      items.push(<MenuItem key="export-svg" icon={faFileImage} label="Экспортировать SVG" onClick={actions.onExportSvg} />)
+      items.push(<MenuItem key="import" icon={faFileImport} label="Импортировать JSON" onClick={actions.onImport} />)
     }
   }
 

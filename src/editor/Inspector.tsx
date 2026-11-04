@@ -25,7 +25,7 @@ import { selectionAnchor } from '../geometry/hitTest'
 import { floorArea, floorShape } from '../geometry/roomShape'
 import { marksOf } from '../geometry/roomMarks'
 import { wallEnds, wallLengthOf } from '../geometry/walls'
-import { CATEGORY_NAME, CHAIR_NAME, categoryOf, chairsOf, objectName } from '../objects/catalog'
+import { CATEGORY_NAME, CHAIR_NAME, categoryOf, chairsOf, interestDisplayName, objectName } from '../objects/catalog'
 import { RoomGlyph, roomIconName } from '../objects/icons'
 import { accessLook, MarkerIcon, objectLook } from '../objects/markers'
 import { chairPose } from '../objects/placement'
@@ -279,7 +279,7 @@ function describe(
   if (selection.kind === 'object') {
     const object = floor.objects.find((item) => item.id === selection.id)
     if (!object) return null
-    const title = objectName(object.kind)
+    const title = object.kind === 'interest' ? interestDisplayName(object.name) : objectName(object.kind)
     const category = CATEGORY_NAME[categoryOf(object.kind)]
     return {
       mark: <MarkerIcon look={objectLook(object)} size={28} />,

@@ -1,7 +1,7 @@
 import { doorSwing } from '../geometry/doors'
 import type { PlacedMarker } from '../geometry/lod'
 import { wallEnds } from '../geometry/walls'
-import { chairsOf, OBJECTS, objectFill, stairDirectionOf, stairStepOf } from '../objects/catalog'
+import { chairsOf, OBJECTS, objectFill, objectMatchesLegend, stairDirectionOf, stairStepOf } from '../objects/catalog'
 import { kindLook, MarkerShape } from '../objects/markers'
 import { chairPose, worldToLocal } from '../objects/placement'
 import { ChairGraphic, SignGraphic } from '../objects/signs'
@@ -30,10 +30,10 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null;
             direction={object.kind === 'stair' ? stairDirectionOf(object) : undefined}
             color={objectFill(object)}
             editing={props.editing}
-            muted={!!props.filter && props.filter !== object.kind}
+            muted={!objectMatchesLegend(object, props.filter)}
           />
           {props.selection?.kind === 'object' && props.selection.id === object.id && (
-            <rect x={-object.length / 2} y={-object.width / 2} width={object.length} height={object.width} {...outline} />
+            <rect data-export="omit" x={-object.length / 2} y={-object.width / 2} width={object.length} height={object.width} {...outline} />
           )}
           {chairsOf(object).map((chair) => {
             const pose = chairPose(object, chair)
@@ -49,7 +49,14 @@ export function FloorObjects(props: { floor: Floor; selection: Selection | null;
                   <ChairGraphic color={objectFill(object)} editing={props.editing} />
                 </g>
                 {selected && (
-                  <rect x={-chair.length / 2} y={-chair.width / 2} width={chair.length} height={chair.width} {...outline} />
+                  <rect
+                    data-export="omit"
+                    x={-chair.length / 2}
+                    y={-chair.width / 2}
+                    width={chair.length}
+                    height={chair.width}
+                    {...outline}
+                  />
                 )}
               </g>
             )
@@ -133,11 +140,9 @@ export function PlacementGhost(props: { kind: ObjectKind; x: number; y: number; 
         color={look.color}
         editing
       />
-      {props.kind !== 'stair' && (
-        <g transform={`scale(${1 / props.zoom})`}>
-          <MarkerShape level="badge" look={look} size={MARKER_PX} />
-        </g>
-      )}
+      <g transform={`scale(${1 / props.zoom})`}>
+        <MarkerShape level="badge" look={look} size={MARKER_PX} />
+      </g>
     </g>
   )
 }
@@ -159,6 +164,7 @@ export function DoorLeaves(props: { floor: Floor; zoom: number; selectedId: stri
               <g key={opening.id}>
                 {selected && (
                   <line
+                    data-export="omit"
                     x1={swing.hinge.x}
                     y1={swing.hinge.y}
                     x2={swing.tip.x}
